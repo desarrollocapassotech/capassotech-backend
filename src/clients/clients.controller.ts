@@ -21,13 +21,25 @@ export class ClientsController {
   ) {}
 
   @Get()
-  findAll() {
-    return this.clientsService.findAll();
+  async findAll(@CurrentUser() user: AuthenticatedRequest['user']) {
+    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requester = { uid: user.uid, roles: requesterProfile.roles };
+    const [clients, managedClientIds] = await Promise.all([
+      this.clientsService.findAll(),
+      this.clientsService.resolveManagedClientIds(requester),
+    ]);
+    return clients.map((client) => this.clientsService.maskBillingForRequester(client, requester, managedClientIds));
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.clientsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedRequest['user']) {
+    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requester = { uid: user.uid, roles: requesterProfile.roles };
+    const [client, managedClientIds] = await Promise.all([
+      this.clientsService.findOne(id),
+      this.clientsService.resolveManagedClientIds(requester),
+    ]);
+    return this.clientsService.maskBillingForRequester(client, requester, managedClientIds);
   }
 
   // Alta: solo admin (igual que hoy, el botón "Nuevo Cliente" no se muestra para

@@ -7,11 +7,20 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AuthService } from '../auth/auth.service';
 import { UserRole } from '../auth/auth.types';
 import { assertValidImageFile, buildClientImagePath } from '../common/profile-image.util';
-import { AppUserEntity, BillingCurrency, ClientEntity, ClientFunctionalAnalystEntity } from '../database/entities';
+import {
+  AppUserEntity,
+  BillingCurrency,
+  ClientEntity,
+  ClientFunctionalAnalystEntity,
+  CollaboratorEntity,
+  ProjectCollaboratorEntity,
+  ProjectCollaboratorRole,
+  ProjectEntity,
+} from '../database/entities';
 import { normalizeBillableConfig } from './billable-config.util';
 import { CreateClientDto, UpdateClientDto } from './clients.dto';
 
@@ -77,6 +86,12 @@ export class ClientsService {
     private readonly analystRepository: Repository<ClientFunctionalAnalystEntity>,
     @InjectRepository(AppUserEntity)
     private readonly appUserRepository: Repository<AppUserEntity>,
+    @InjectRepository(CollaboratorEntity)
+    private readonly collaboratorRepository: Repository<CollaboratorEntity>,
+    @InjectRepository(ProjectEntity)
+    private readonly projectRepository: Repository<ProjectEntity>,
+    @InjectRepository(ProjectCollaboratorEntity)
+    private readonly assignmentRepository: Repository<ProjectCollaboratorEntity>,
     private readonly authService: AuthService,
   ) {}
 
@@ -97,6 +112,62 @@ export class ClientsService {
   async findOne(id: string): Promise<ClientResponse> {
     const client = await this.findEntity(id);
     return this.withAnalysts(client);
+  }
+
+  // GET /clients y GET /clients/:id quedan abiertos a cualquier autenticado (se
+  // usan en proyectos, historial, paneles de PM/QA), pero eso no debe filtrar el
+  // markup/config de facturación de un cliente a otro colaborador o a otro
+  // cliente. Ven este campo sin enmascarar: admin, contable, el propio cliente
+  // sobre su propio registro (ClientHistory.tsx necesita su billableConfig para
+  // explicar sus horas facturadas), y un project_manager sobre los clientes de
+  // los proyectos que gestiona (ProjectManagerPanel.tsx necesita billableConfig
+  // para calcular las horas facturables de su equipo). `managedClientIds` se
+  // resuelve una sola vez por request vía resolveManagedClientIds, no acá, para
+  // no disparar una query por cliente en el listado.
+  maskBillingForRequester(
+    client: ClientResponse,
+    requester: RequesterContext,
+    managedClientIds: Set<string> = new Set(),
+  ): ClientResponse {
+    const isPrivileged = requester.roles.includes(UserRole.ADMIN) || requester.roles.includes(UserRole.CONTABLE);
+    const isSelf = client.userId !== null && client.userId === requester.uid;
+    const isManaged = managedClientIds.has(client.id);
+
+    if (isPrivileged || isSelf || isManaged) {
+      return client;
+    }
+
+    const { billableConfig: _billableConfig, ...masked } = client;
+    return masked as ClientResponse;
+  }
+
+  // Resuelve, para un project_manager, el conjunto de clientes cuyos proyectos
+  // gestiona (managerIds). Devuelve un Set vacío para cualquier otro rol o si el
+  // requester no tiene un colaborador asociado.
+  async resolveManagedClientIds(requester: RequesterContext): Promise<Set<string>> {
+    if (!requester.roles.includes(UserRole.PROJECT_MANAGER)) {
+      return new Set();
+    }
+
+    const ownCollaborator = await this.collaboratorRepository.findOneBy({ userId: requester.uid });
+    if (!ownCollaborator) {
+      return new Set();
+    }
+
+    const managedAssignments = await this.assignmentRepository.find({
+      where: { collaboratorId: ownCollaborator.id, role: ProjectCollaboratorRole.MANAGER },
+    });
+    const managedProjectIds = managedAssignments.map((a) => a.projectId);
+    if (managedProjectIds.length === 0) {
+      return new Set();
+    }
+
+    const managedProjects = await this.projectRepository.find({ where: { id: In(managedProjectIds) } });
+    return new Set(
+      managedProjects
+        .map((project) => project.clientId)
+        .filter((clientId): clientId is string => clientId !== null),
+    );
   }
 
   async create(dto: CreateClientDto): Promise<ClientResponse> {
