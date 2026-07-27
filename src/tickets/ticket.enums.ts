@@ -10,16 +10,6 @@ export enum TicketPriority {
   URGENTE = 'urgente',
 }
 
-export enum TicketState {
-  NUEVO = 'nuevo',
-  EN_REVISION = 'en_revision',
-  EN_PROGRESO = 'en_progreso',
-  ESPERANDO_CLIENTE = 'esperando_cliente',
-  RESUELTO = 'resuelto',
-  CERRADO = 'cerrado',
-  REABIERTO = 'reabierto',
-}
-
 export enum TicketOrigin {
   VIALTO_SSO = 'vialto_sso',
   CAPASSOTECH_FORM = 'capassotech_form',

@@ -1,7 +1,7 @@
 import { Column, CreateDateColumn, Entity, OneToMany, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 import { TicketAttachmentEntity } from './ticket-attachment.entity';
 import { TicketMessageEntity } from './ticket-message.entity';
-import { TicketOrigin, TicketPriority, TicketState, TicketEmpresa } from '../../tickets/ticket.enums';
+import { TicketOrigin, TicketPriority, TicketEmpresa } from '../../tickets/ticket.enums';
 
 @Entity({ name: 'tickets', schema: 'tracker' })
 export class TicketEntity {
@@ -26,8 +26,10 @@ export class TicketEntity {
   @Column({ type: 'enum', enum: TicketPriority, enumName: 'ticket_priority' })
   prioridad: TicketPriority;
 
-  @Column({ type: 'enum', enum: TicketState, enumName: 'ticket_state', default: TicketState.NUEVO })
-  estado: TicketState;
+  // FK a tracker.ticket_states(id): reemplaza al enum fijo tracker.ticket_state
+  // para que el panel de soporte pueda agregar estados/columnas nuevos sin deploy.
+  @Column({ type: 'text', default: 'nuevo' })
+  estado: string;
 
   @Column({ type: 'enum', enum: TicketOrigin, enumName: 'ticket_origin' })
   origen: TicketOrigin;

@@ -11,6 +11,7 @@ import { TimeEntryEntity } from './time-entry.entity';
 import { TicketAttachmentEntity } from './ticket-attachment.entity';
 import { TicketEntity } from './ticket.entity';
 import { TicketMessageEntity } from './ticket-message.entity';
+import { TicketStateEntity } from './ticket-state.entity';
 
 export * from './app-user.entity';
 export * from './client-functional-analyst.entity';
@@ -26,6 +27,7 @@ export * from './time-entry.entity';
 export * from './ticket-attachment.entity';
 export * from './ticket.entity';
 export * from './ticket-message.entity';
+export * from './ticket-state.entity';
 
 export const entities = [
   AppUserEntity,
@@ -41,4 +43,5 @@ export const entities = [
   TicketEntity,
   TicketMessageEntity,
   TicketAttachmentEntity,
+  TicketStateEntity,
 ];

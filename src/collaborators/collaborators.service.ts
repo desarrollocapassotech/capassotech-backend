@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { AuthService } from '../auth/auth.service';
 import { assertValidImageFile, buildCollaboratorImagePath } from '../common/profile-image.util';
 import {
@@ -15,6 +15,9 @@ import {
   BillingCurrency,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
+  ProjectCollaboratorEntity,
+  ProjectCollaboratorRole,
+  TimeEntryEntity,
   UserRole,
 } from '../database/entities';
 import { CollaboratorProjectRateDto, CreateCollaboratorDto, UpdateCollaboratorDto } from './collaborators.dto';
@@ -92,6 +95,10 @@ export class CollaboratorsService {
     private readonly appUserRepository: Repository<AppUserEntity>,
     @InjectRepository(CollaboratorProjectRateEntity)
     private readonly projectRateRepository: Repository<CollaboratorProjectRateEntity>,
+    @InjectRepository(ProjectCollaboratorEntity)
+    private readonly assignmentRepository: Repository<ProjectCollaboratorEntity>,
+    @InjectRepository(TimeEntryEntity)
+    private readonly timeEntryRepository: Repository<TimeEntryEntity>,
     private readonly authService: AuthService,
   ) {}
 
@@ -120,6 +127,75 @@ export class CollaboratorsService {
       throw new NotFoundException('Colaborador no encontrado.');
     }
     return this.attachProjectRates(found);
+  }
+
+  // GET /collaborators y GET /collaborators/:id quedan abiertos a cualquier
+  // autenticado (ver comentario en el controller), pero eso no debe filtrar
+  // sueldo/CBU de TODO el equipo a cualquier colaborador. Ven estos campos sin
+  // enmascarar: admin, contable, el propio colaborador sobre su propio registro
+  // (mismo criterio que resolveAllowedFields para edición), y un
+  // project_manager sobre los colaboradores asignados a los proyectos que
+  // gestiona (ProjectManagerPanel.tsx necesita el hourlyRate de su equipo para
+  // calcular las horas facturables). `managedCollaboratorIds` se resuelve una
+  // sola vez por request vía resolveManagedCollaboratorIds, no acá, para no
+  // disparar una query por colaborador en el listado.
+  maskFinancialsForRequester(
+    collaborator: CollaboratorResponse,
+    requester: RequesterContext,
+    managedCollaboratorIds: Set<string> = new Set(),
+  ): CollaboratorResponse {
+    const isPrivileged = requester.roles.includes(UserRole.ADMIN) || requester.roles.includes(UserRole.CONTABLE);
+    const isSelf = collaborator.userId !== null && collaborator.userId === requester.uid;
+    const isManaged = managedCollaboratorIds.has(collaborator.id);
+
+    if (isPrivileged || isSelf || isManaged) {
+      return collaborator;
+    }
+
+    const { hourlyRate: _hourlyRate, cbuCvu: _cbuCvu, projectRates: _projectRates, ...masked } = collaborator;
+    return masked as CollaboratorResponse;
+  }
+
+  // Resuelve, para un project_manager, el conjunto de colaboradores "visibles"
+  // en los proyectos que gestiona: no alcanza con los asignados formalmente en
+  // project_collaborators (team member/manager), porque alguien puede haber
+  // cargado horas en el proyecto sin estar asignado ahí (ej. un admin cubriendo
+  // una tarea puntual) y el cálculo de horas facturables del panel de PM
+  // (calculateBillableHours) necesita el hourlyRate de TODOS los que le cargaron
+  // horas ese mes, no solo del equipo formal. Devuelve un Set vacío para
+  // cualquier otro rol o si el requester no tiene un colaborador asociado.
+  async resolveManagedCollaboratorIds(requester: RequesterContext): Promise<Set<string>> {
+    if (!requester.roles.includes(UserRole.PROJECT_MANAGER)) {
+      return new Set();
+    }
+
+    const ownCollaborator = await this.collaboratorRepository.findOneBy({ userId: requester.uid });
+    if (!ownCollaborator) {
+      return new Set();
+    }
+
+    const managerAssignments = await this.assignmentRepository.find({
+      where: { collaboratorId: ownCollaborator.id, role: ProjectCollaboratorRole.MANAGER },
+    });
+    const managedProjectIds = managerAssignments.map((a) => a.projectId);
+    if (managedProjectIds.length === 0) {
+      return new Set();
+    }
+
+    const [teamAssignments, timeEntryRows] = await Promise.all([
+      this.assignmentRepository.find({ where: { projectId: In(managedProjectIds) } }),
+      this.timeEntryRepository
+        .createQueryBuilder('te')
+        .select('DISTINCT te.collaborator_id', 'collaboratorId')
+        .where('te.project_id IN (:...projectIds)', { projectIds: managedProjectIds })
+        .getRawMany<{ collaboratorId: string }>(),
+    ]);
+
+    const collaboratorIds = new Set(teamAssignments.map((a) => a.collaboratorId));
+    for (const row of timeEntryRows) {
+      collaboratorIds.add(row.collaboratorId);
+    }
+    return collaboratorIds;
   }
 
   async create(dto: CreateCollaboratorDto): Promise<CollaboratorResponse> {

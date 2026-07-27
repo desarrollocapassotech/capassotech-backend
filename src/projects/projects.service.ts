@@ -2,14 +2,26 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { EntityManager, Repository } from 'typeorm';
-import { ProjectCollaboratorRole, ProjectEntity, ProjectDeliverableEntity } from '../database/entities';
+import {
+  ClientEntity,
+  CollaboratorEntity,
+  ProjectCollaboratorRole,
+  ProjectEntity,
+  ProjectDeliverableEntity,
+} from '../database/entities';
 import { ProjectCollaboratorEntity } from '../database/entities';
+import { UserRole } from '../auth/auth.types';
 import { CreateProjectDto, ProjectDeliverableDto, UpdateProjectDto } from './projects.dto';
 
 export interface ProjectResponse extends ProjectEntity {
   managerIds: string[];
   teamMemberIds: string[];
   deliverables: (ProjectDeliverableDto & { id: string })[];
+}
+
+export interface RequesterContext {
+  uid: string;
+  roles: UserRole[];
 }
 
 @Injectable()
@@ -21,6 +33,10 @@ export class ProjectsService {
     private readonly assignmentRepository: Repository<ProjectCollaboratorEntity>,
     @InjectRepository(ProjectDeliverableEntity)
     private readonly deliverableRepository: Repository<ProjectDeliverableEntity>,
+    @InjectRepository(ClientEntity)
+    private readonly clientRepository: Repository<ClientEntity>,
+    @InjectRepository(CollaboratorEntity)
+    private readonly collaboratorRepository: Repository<CollaboratorEntity>,
   ) {}
 
   async findAll(): Promise<ProjectResponse[]> {
@@ -57,6 +73,50 @@ export class ProjectsService {
   async findOne(id: string): Promise<ProjectResponse> {
     const project = await this.findEntity(this.projectRepository.manager, id);
     return this.withAssignments(project);
+  }
+
+  // GET /projects y GET /projects/:id quedan abiertos a cualquier autenticado
+  // (carga de horas, historial de clientes, panel de PM/QA), pero eso no debe
+  // filtrar cuánto le cobramos a un cliente a colaboradores/PM/QA, ni el rate de
+  // OTROS clientes a un cliente logueado. Ven estos campos sin enmascarar:
+  // admin, contable, el propio cliente sobre sus propios proyectos
+  // (ClientPanel.tsx/ClientHistory.tsx necesitan rate/currency para mostrar sus
+  // horas facturables), y un project_manager sobre los proyectos que gestiona
+  // (ProjectManagerPanel.tsx necesita rate/currency para calcular las horas
+  // facturables de su equipo vía calculateBillableHours en el frontend).
+  async maskRatesForRequester(projects: ProjectResponse[], requester: RequesterContext): Promise<ProjectResponse[]> {
+    const isPrivileged = requester.roles.includes(UserRole.ADMIN) || requester.roles.includes(UserRole.CONTABLE);
+    if (isPrivileged) {
+      return projects;
+    }
+
+    let ownClientId: string | null = null;
+    if (requester.roles.includes(UserRole.CLIENT)) {
+      const ownClient = await this.clientRepository.findOneBy({ userId: requester.uid });
+      ownClientId = ownClient?.id ?? null;
+    }
+
+    let managedProjectIds: Set<string> | null = null;
+    if (requester.roles.includes(UserRole.PROJECT_MANAGER)) {
+      const ownCollaborator = await this.collaboratorRepository.findOneBy({ userId: requester.uid });
+      if (ownCollaborator) {
+        const managedAssignments = await this.assignmentRepository.find({
+          where: { collaboratorId: ownCollaborator.id, role: ProjectCollaboratorRole.MANAGER },
+        });
+        managedProjectIds = new Set(managedAssignments.map((a) => a.projectId));
+      }
+    }
+
+    return projects.map((project) => {
+      if (ownClientId !== null && project.clientId === ownClientId) {
+        return project;
+      }
+      if (managedProjectIds?.has(project.id)) {
+        return project;
+      }
+      const { rate: _rate, currency: _currency, ...masked } = project;
+      return masked as ProjectResponse;
+    });
   }
 
   // Alta + asignación de responsables/equipo en una sola transacción: si una

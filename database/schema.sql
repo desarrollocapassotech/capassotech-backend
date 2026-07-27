@@ -25,17 +25,24 @@ CREATE TYPE tracker.user_role AS ENUM (
 -- Ticketera
 CREATE TYPE tracker.ticket_empresa AS ENUM ('vialto', 'capassotech');
 CREATE TYPE tracker.ticket_priority AS ENUM ('baja', 'media', 'alta', 'urgente');
-CREATE TYPE tracker.ticket_state AS ENUM (
-  'nuevo',
-  'en_revision',
-  'en_progreso',
-  'esperando_cliente',
-  'resuelto',
-  'cerrado',
-  'reabierto'
-);
 CREATE TYPE tracker.ticket_origin AS ENUM ('vialto_sso', 'capassotech_form', 'capassotech_login');
 CREATE TYPE tracker.ticket_message_author AS ENUM ('cliente', 'agente');
+
+-- Estados del ticket: tabla configurable (no enum) para que el tablero Kanban
+-- del panel de soporte pueda agregar columnas/estados nuevos sin deploy.
+-- Reemplaza al enum tracker.ticket_state que existía antes (ver migración
+-- AddTicketStates). Seed inicial: nuevo, en_revision, en_progreso,
+-- esperando_cliente, resuelto, cerrado, reabierto (orden 0..6, "nuevo" es
+-- es_default = true).
+CREATE TABLE tracker.ticket_states (
+  id TEXT PRIMARY KEY,
+  nombre TEXT NOT NULL,
+  color TEXT NOT NULL,
+  orden INT NOT NULL,
+  es_default BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 CREATE TABLE tracker.tickets (
   id TEXT PRIMARY KEY,
@@ -45,7 +52,7 @@ CREATE TABLE tracker.tickets (
   asunto TEXT NOT NULL,
   descripcion TEXT NOT NULL,
   prioridad tracker.ticket_priority NOT NULL,
-  estado tracker.ticket_state NOT NULL DEFAULT 'nuevo',
+  estado TEXT NOT NULL DEFAULT 'nuevo' REFERENCES tracker.ticket_states(id),
   origen tracker.ticket_origin NOT NULL,
   cliente_nombre TEXT NOT NULL,
   cliente_email TEXT NOT NULL,
@@ -54,6 +61,8 @@ CREATE TABLE tracker.tickets (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX tickets_estado_idx ON tracker.tickets (estado);
 
 CREATE TABLE tracker.ticket_messages (
   id TEXT PRIMARY KEY,

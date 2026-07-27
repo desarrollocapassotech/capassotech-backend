@@ -1,7 +1,9 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { AuthService } from '../auth/auth.service';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/auth.types';
-import { FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
+import { AuthenticatedRequest, FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ProjectsService } from './projects.service';
 import type { CreateProjectDto, ReplaceProjectDeliverablesDto, UpdateProjectDto } from './projects.dto';
@@ -17,16 +19,27 @@ import type { CreateProjectDto, ReplaceProjectDeliverablesDto, UpdateProjectDto 
 @UseGuards(FirebaseAuthGuard)
 @Controller('projects')
 export class ProjectsController {
-  constructor(private readonly projectsService: ProjectsService) {}
+  constructor(
+    private readonly projectsService: ProjectsService,
+    private readonly authService: AuthService,
+  ) {}
 
   @Get()
-  findAll() {
-    return this.projectsService.findAll();
+  async findAll(@CurrentUser() user: AuthenticatedRequest['user']) {
+    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const projects = await this.projectsService.findAll();
+    return this.projectsService.maskRatesForRequester(projects, { uid: user.uid, roles: requesterProfile.roles });
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.projectsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedRequest['user']) {
+    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const project = await this.projectsService.findOne(id);
+    const [masked] = await this.projectsService.maskRatesForRequester([project], {
+      uid: user.uid,
+      roles: requesterProfile.roles,
+    });
+    return masked;
   }
 
   @UseGuards(RolesGuard)

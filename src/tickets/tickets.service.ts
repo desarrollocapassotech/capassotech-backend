@@ -5,9 +5,10 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { ClientEntity, TicketAttachmentEntity, TicketEntity, TicketMessageEntity } from '../database/entities';
 import { AuthService } from '../auth/auth.service';
+import { TicketStatesService } from '../ticket-states/ticket-states.service';
 // import { MailService } from '../common/mail.service'; // deshabilitado: SMTP_HOST no está configurado en Render, rompía el boot del backend
-import { CreateTicketDto, CreateTicketMessageDto, TicketClientProfileDto } from './tickets.dto';
-import { TicketEmpresa, TicketPriority, TicketState, TicketOrigin, TicketMessageAuthor } from './ticket.enums';
+import { CreateTicketDto, CreateTicketMessageDto, FindTicketsQueryDto, TicketClientProfileDto, UpdateTicketDto } from './tickets.dto';
+import { TicketEmpresa, TicketPriority, TicketOrigin, TicketMessageAuthor } from './ticket.enums';
 
 @Injectable()
 export class TicketsService {
@@ -24,6 +25,7 @@ export class TicketsService {
     @InjectRepository(ClientEntity)
     private readonly clientRepository: Repository<ClientEntity>,
     private readonly authService: AuthService,
+    private readonly ticketStatesService: TicketStatesService,
     // private readonly mailService: MailService, // deshabilitado: SMTP_HOST no está configurado en Render
     private readonly configService: ConfigService,
   ) {
@@ -42,7 +44,7 @@ export class TicketsService {
     ticket.asunto = dto.asunto.trim();
     ticket.descripcion = dto.descripcion.trim();
     ticket.prioridad = dto.prioridad;
-    ticket.estado = TicketState.NUEVO;
+    ticket.estado = (await this.ticketStatesService.getDefault()).id;
     ticket.origen = dto.origen;
     ticket.clienteNombre = dto.clienteNombre.trim();
     ticket.clienteEmail = dto.clienteEmail.trim();
@@ -90,6 +92,40 @@ export class TicketsService {
       throw new NotFoundException('Ticket no encontrado.');
     }
     return ticket;
+  }
+
+  // Listado del tablero Kanban del panel de soporte, con filtros opcionales.
+  findAll(filtros: FindTicketsQueryDto): Promise<TicketEntity[]> {
+    const where: Record<string, string> = {};
+    if (filtros.empresa) where.empresa = filtros.empresa;
+    if (filtros.sistema) where.sistema = filtros.sistema;
+    if (filtros.prioridad) where.prioridad = filtros.prioridad;
+    if (filtros.estado) where.estado = filtros.estado;
+
+    return this.ticketRepository.find({ where, order: { createdAt: 'DESC' } });
+  }
+
+  // Usado por el drag & drop del tablero (cambio de columna = cambio de
+  // estado) y, a futuro, por la asignación de un agente al ticket.
+  async updateStatus(id: string, dto: UpdateTicketDto): Promise<TicketEntity> {
+    const ticket = await this.ticketRepository.findOneBy({ id });
+    if (!ticket) {
+      throw new NotFoundException('Ticket no encontrado.');
+    }
+
+    if (dto.estado !== undefined) {
+      const estadoExiste = await this.ticketStatesService.existsById(dto.estado);
+      if (!estadoExiste) {
+        throw new BadRequestException('El estado indicado no existe.');
+      }
+      ticket.estado = dto.estado;
+    }
+
+    if (dto.asignadoA !== undefined) {
+      ticket.asignadoA = dto.asignadoA;
+    }
+
+    return this.ticketRepository.save(ticket);
   }
 
   async createMessageAsClient(codigo: string, dto: CreateTicketMessageDto): Promise<TicketEntity> {
