@@ -56,7 +56,7 @@ export class ExpensesService {
     });
 
     const saved = await this.trySave(expense, 'crear');
-    void this.notifyAdmins(saved, 'creado', actorEmail);
+    void this.notifyExpenseWatchers(saved, 'creado', actorEmail);
     return saved;
   }
 
@@ -84,7 +84,7 @@ export class ExpensesService {
     if (dto.notes !== undefined) existing.notes = dto.notes;
 
     const saved = await this.trySave(existing, 'actualizar');
-    void this.notifyAdmins(saved, 'actualizado', actorEmail);
+    void this.notifyExpenseWatchers(saved, 'actualizado', actorEmail);
     return saved;
   }
 
@@ -112,16 +112,19 @@ export class ExpensesService {
 
   // Best-effort: si Resend falla o no está configurado, el gasto ya se guardó y la
   // request no debe fallar por eso (ver ResendService, no lanza sin API key).
-  private async notifyAdmins(expense: ExpenseEntity, action: 'creado' | 'actualizado', actorEmail: string): Promise<void> {
+  private async notifyExpenseWatchers(expense: ExpenseEntity, action: 'creado' | 'actualizado', actorEmail: string): Promise<void> {
     try {
       // roles es un array de Postgres: se filtra en memoria (mismo criterio que ya
       // usa el frontend para listas cortas como esta) en vez de armar un WHERE con
-      // el operador @> a mano.
+      // el operador @> a mano. Mismos roles que pueden ver/gestionar Gastos (ver
+      // @Roles en ExpensesController): admin + contable, no solo admin.
       const collaborators = await this.collaboratorRepository.find();
-      const admins = collaborators.filter((collaborator) => collaborator.roles.includes(UserRole.ADMIN));
-      const recipients = [...new Set(admins.map((admin) => admin.workEmail ?? admin.personalEmail).filter((email): email is string => !!email))];
+      const watchers = collaborators.filter(
+        (collaborator) => collaborator.roles.includes(UserRole.ADMIN) || collaborator.roles.includes(UserRole.CONTABLE),
+      );
+      const recipients = [...new Set(watchers.map((watcher) => watcher.workEmail ?? watcher.personalEmail).filter((email): email is string => !!email))];
       if (recipients.length === 0) {
-        this.logger.warn('No hay ningún admin con email configurado; se omite la notificación de gasto.');
+        this.logger.warn('No hay ningún admin/contable con email configurado; se omite la notificación de gasto.');
         return;
       }
 

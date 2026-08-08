@@ -1,22 +1,12 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
 const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
 
-// Logo embebido como data URI: los clientes de correo no cargan imágenes de un
-// frontend que puede no tener dominio propio/estable, así que se copia el mismo
-// archivo que usa el frontend (ver nest-cli.json -> compilerOptions.assets, copia
-// esta carpeta a dist/expenses/assets en el build) y se manda inline en el HTML.
-// Si por algún motivo no está el archivo, el email se manda igual sin logo.
-const LOGO_DATA_URI = (() => {
-  try {
-    const buffer = readFileSync(join(__dirname, 'assets', 'logo.png'));
-    return `data:image/png;base64,${buffer.toString('base64')}`;
-  } catch {
-    return null;
-  }
-})();
+// URL pública y estable (Firebase Storage, mismo bucket que las fotos de perfil).
+// Gmail y la mayoría de los webmail bloquean imágenes data: URI inline en emails
+// recibidos (medida antispam), así que el logo tiene que ser una URL real en vez de
+// ir embebido en base64.
+const LOGO_URL =
+  'https://firebasestorage.googleapis.com/v0/b/capassotech-timetracker.firebasestorage.app/o/public%2Fexpense-notification-logo.png?alt=media&token=55fa7d1c-440a-44d5-8e21-7ee4fed23250';
 
 // Tabla HTML con estilos inline (nada de <style> ni clases: los clientes de correo
 // ignoran/recortan hojas de estilo externas). Mismo diseño que se puede previsualizar
@@ -32,16 +22,21 @@ export function buildExpenseNotificationHtml(action: 'creado' | 'actualizado', r
     )
     .join('');
 
-  const header = LOGO_DATA_URI
-    ? `<img src="${LOGO_DATA_URI}" alt="CapassoTech" height="40" style="display:block; height:40px; width:auto;" />`
-    : `<span style="color:#111827; font-size:16px; font-weight:600;">CapassoTech &middot; TimeTracker</span>`;
-
   return `
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background-color:#f4f5f7; padding:32px 16px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px; margin:0 auto; background:#ffffff; border-radius:12px; overflow:hidden; border:1px solid #e5e7eb;">
     <tr>
       <td style="background-color:#ffffff; padding:20px 32px; border-bottom:1px solid #e5e7eb;">
-        ${header}
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="vertical-align:middle;">
+              <img src="${LOGO_URL}" alt="CapassoTech" height="40" style="display:block; height:40px; width:auto;" />
+            </td>
+            <td style="vertical-align:middle; text-align:right;">
+              <span style="font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#9ca3af;">TimeTracker &middot; Gastos</span>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
     <tr>
