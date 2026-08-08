@@ -38,3 +38,8 @@ export enum ProjectCollaboratorRole {
   MANAGER = 'manager',
   TEAM_MEMBER = 'team_member',
 }
+
+export enum ExpensePeriodicity {
+  UNICO = 'unico',
+  MENSUAL = 'mensual',
+}

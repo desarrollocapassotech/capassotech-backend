@@ -1,0 +1,46 @@
+import { Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
+import { BillingCurrency, ExpensePeriodicity } from './enums';
+
+// tracker.expenses: gastos de la empresa, visible solo para admin/contable
+// (ver ExpensesController). Solo description y amount son obligatorios.
+@Entity({ name: 'expenses', schema: 'tracker' })
+export class ExpenseEntity {
+  @PrimaryColumn({ type: 'text' })
+  id: string;
+
+  @Column({ type: 'text' })
+  description: string;
+
+  @Column({ type: 'numeric', precision: 12, scale: 2 })
+  amount: string;
+
+  @Column({ type: 'enum', enum: BillingCurrency, enumName: 'billing_currency', default: BillingCurrency.USD })
+  currency: BillingCurrency;
+
+  @Column({ type: 'enum', enum: ExpensePeriodicity, enumName: 'expense_periodicity', default: ExpensePeriodicity.UNICO })
+  periodicity: ExpensePeriodicity;
+
+  @Column({ name: 'project_id', type: 'text', nullable: true })
+  projectId: string | null;
+
+  @Column({ name: 'payment_method', type: 'text', nullable: true })
+  paymentMethod: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  category: string | null;
+
+  @Column({ name: 'expense_date', type: 'date', nullable: true })
+  expenseDate: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  notes: string | null;
+
+  @Column({ name: 'created_by', type: 'text', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
+}
