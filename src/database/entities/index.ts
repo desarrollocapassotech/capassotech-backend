@@ -1,8 +1,10 @@
 import { AppUserEntity } from './app-user.entity';
 import { ClientFunctionalAnalystEntity } from './client-functional-analyst.entity';
+import { ClientHoursAlertEntity } from './client-hours-alert.entity';
 import { ClientEntity } from './client.entity';
 import { CollaboratorEntity } from './collaborator.entity';
 import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entity';
+import { ExpenseEntity } from './expense.entity';
 import { HealthCheckEntity } from './health-check.entity';
 import { MonthlyExchangeRateEntity } from './monthly-exchange-rate.entity';
 import { ProjectCollaboratorEntity } from './project-collaborator.entity';
@@ -16,10 +18,12 @@ import { TicketStateEntity } from './ticket-state.entity';
 
 export * from './app-user.entity';
 export * from './client-functional-analyst.entity';
+export * from './client-hours-alert.entity';
 export * from './client.entity';
 export * from './collaborator.entity';
 export * from './collaborator-project-rate.entity';
 export * from './enums';
+export * from './expense.entity';
 export * from './health-check.entity';
 export * from './monthly-exchange-rate.entity';
 export * from './project-collaborator.entity';
@@ -40,7 +44,9 @@ export const entities = [
   ProjectCollaboratorEntity,
   ProjectDeliverableEntity,
   ClientFunctionalAnalystEntity,
+  ClientHoursAlertEntity,
   TimeEntryEntity,
+  ExpenseEntity,
   HealthCheckEntity,
   MonthlyExchangeRateEntity,
   TicketEntity,

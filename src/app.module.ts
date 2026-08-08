@@ -8,7 +8,9 @@ import { ClientsModule } from './clients/clients.module';
 import { CollaboratorsModule } from './collaborators/collaborators.module';
 import { DatabaseModule } from './database/database.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
+import { ExpensesModule } from './expenses/expenses.module';
 import { HealthModule } from './health/health.module';
+import { HoursAlertsModule } from './hours-alerts/hours-alerts.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { TicketStatesModule } from './ticket-states/ticket-states.module';
 import { UsersModule } from './users/users.module';
@@ -24,7 +26,9 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     CollaboratorsModule,
     ClientsModule,
     ExchangeRateModule,
+    ExpensesModule,
     HealthModule,
+    HoursAlertsModule,
     TicketStatesModule,
     TicketsModule,
     UsersModule,
