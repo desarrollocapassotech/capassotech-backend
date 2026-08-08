@@ -1,15 +1,24 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { Repository } from 'typeorm';
-import { ExpenseEntity } from '../database/entities';
+import { ResendService } from '../common/resend.service';
+import { CollaboratorEntity, ExpenseEntity, ProjectEntity, UserRole } from '../database/entities';
 import { CreateExpenseDto, UpdateExpenseDto } from './expenses.dto';
+import { buildExpenseNotificationHtml } from './expense-notification.template';
 
 @Injectable()
 export class ExpensesService {
+  private readonly logger = new Logger(ExpensesService.name);
+
   constructor(
     @InjectRepository(ExpenseEntity)
     private readonly expenseRepository: Repository<ExpenseEntity>,
+    @InjectRepository(CollaboratorEntity)
+    private readonly collaboratorRepository: Repository<CollaboratorEntity>,
+    @InjectRepository(ProjectEntity)
+    private readonly projectRepository: Repository<ProjectEntity>,
+    private readonly resendService: ResendService,
   ) {}
 
   findAll(): Promise<ExpenseEntity[]> {
@@ -24,7 +33,7 @@ export class ExpensesService {
     return expense;
   }
 
-  async create(dto: CreateExpenseDto, createdBy: string): Promise<ExpenseEntity> {
+  async create(dto: CreateExpenseDto, actorEmail: string): Promise<ExpenseEntity> {
     if (!dto.description?.trim()) {
       throw new BadRequestException('Falta la descripción del gasto.');
     }
@@ -43,13 +52,15 @@ export class ExpensesService {
       category: dto.category ?? null,
       expenseDate: dto.expenseDate ?? null,
       notes: dto.notes ?? null,
-      createdBy,
+      createdBy: actorEmail,
     });
 
-    return this.trySave(expense, 'crear');
+    const saved = await this.trySave(expense, 'crear');
+    void this.notifyAdmins(saved, 'creado', actorEmail);
+    return saved;
   }
 
-  async update(id: string, dto: UpdateExpenseDto): Promise<ExpenseEntity> {
+  async update(id: string, dto: UpdateExpenseDto, actorEmail: string): Promise<ExpenseEntity> {
     const existing = await this.findOne(id);
 
     if (dto.description !== undefined) {
@@ -72,7 +83,9 @@ export class ExpensesService {
     if (dto.expenseDate !== undefined) existing.expenseDate = dto.expenseDate;
     if (dto.notes !== undefined) existing.notes = dto.notes;
 
-    return this.trySave(existing, 'actualizar');
+    const saved = await this.trySave(existing, 'actualizar');
+    void this.notifyAdmins(saved, 'actualizado', actorEmail);
+    return saved;
   }
 
   async remove(id: string): Promise<void> {
@@ -95,5 +108,44 @@ export class ExpensesService {
 
   private isForeignKeyViolation(error: unknown): boolean {
     return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23503';
+  }
+
+  // Best-effort: si Resend falla o no está configurado, el gasto ya se guardó y la
+  // request no debe fallar por eso (ver ResendService, no lanza sin API key).
+  private async notifyAdmins(expense: ExpenseEntity, action: 'creado' | 'actualizado', actorEmail: string): Promise<void> {
+    try {
+      // roles es un array de Postgres: se filtra en memoria (mismo criterio que ya
+      // usa el frontend para listas cortas como esta) en vez de armar un WHERE con
+      // el operador @> a mano.
+      const collaborators = await this.collaboratorRepository.find();
+      const admins = collaborators.filter((collaborator) => collaborator.roles.includes(UserRole.ADMIN));
+      const recipients = [...new Set(admins.map((admin) => admin.workEmail ?? admin.personalEmail).filter((email): email is string => !!email))];
+      if (recipients.length === 0) {
+        this.logger.warn('No hay ningún admin con email configurado; se omite la notificación de gasto.');
+        return;
+      }
+
+      const projectName = expense.projectId
+        ? (await this.projectRepository.findOneBy({ id: expense.projectId }))?.name
+        : null;
+
+      const subject = `Gasto ${action}: ${expense.description}`;
+      const rows: [string, string][] = [
+        ['Concepto', expense.description],
+        ['Monto', `${Number(expense.amount).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${expense.currency}`],
+        ['Periodicidad', expense.periodicity === 'mensual' ? 'Mensual' : 'Único'],
+        ['Proyecto', projectName ?? 'Sin proyecto asociado'],
+        ['Medio de pago', expense.paymentMethod ?? '-'],
+        ['Categoría', expense.category ?? '-'],
+        ['Fecha', expense.expenseDate ?? '-'],
+        ['Notas', expense.notes ?? '-'],
+        ['Realizado por', actorEmail],
+      ];
+      const html = buildExpenseNotificationHtml(action, rows);
+
+      await this.resendService.send({ to: recipients, subject, html });
+    } catch (error) {
+      this.logger.error(`No se pudo notificar el gasto ${expense.id} por email: ${(error as Error).message}`);
+    }
   }
 }

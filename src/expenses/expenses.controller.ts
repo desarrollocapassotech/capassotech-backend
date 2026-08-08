@@ -27,12 +27,12 @@ export class ExpensesController {
 
   @Post()
   create(@Body() body: CreateExpenseDto, @CurrentUser() user: AuthenticatedRequest['user']) {
-    return this.expensesService.create(body, user.uid);
+    return this.expensesService.create(body, user.email);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() body: UpdateExpenseDto) {
-    return this.expensesService.update(id, body);
+  update(@Param('id') id: string, @Body() body: UpdateExpenseDto, @CurrentUser() user: AuthenticatedRequest['user']) {
+    return this.expensesService.update(id, body, user.email);
   }
 
   @Delete(':id')
