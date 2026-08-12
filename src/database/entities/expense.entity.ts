@@ -20,14 +20,15 @@ export class ExpenseEntity {
   @Column({ type: 'enum', enum: ExpensePeriodicity, enumName: 'expense_periodicity', default: ExpensePeriodicity.UNICO })
   periodicity: ExpensePeriodicity;
 
-  @Column({ name: 'project_id', type: 'text', nullable: true })
-  projectId: string | null;
-
   @Column({ name: 'payment_method', type: 'text', nullable: true })
   paymentMethod: string | null;
 
   @Column({ name: 'alternative_payment_method', type: 'text', nullable: true })
   alternativePaymentMethod: string | null;
+
+  // Cómo acceder al pago (ej: en qué cuenta/plataforma entrar, con qué usuario).
+  @Column({ name: 'payment_access', type: 'text', nullable: true })
+  paymentAccess: string | null;
 
   @Column({ type: 'text', nullable: true })
   category: string | null;

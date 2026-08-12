@@ -5,6 +5,7 @@ import { ClientEntity } from './client.entity';
 import { CollaboratorEntity } from './collaborator.entity';
 import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entity';
 import { ExpenseEntity } from './expense.entity';
+import { ExpenseProjectEntity } from './expense-project.entity';
 import { HealthCheckEntity } from './health-check.entity';
 import { MonthlyExchangeRateEntity } from './monthly-exchange-rate.entity';
 import { ProjectCollaboratorEntity } from './project-collaborator.entity';
@@ -24,6 +25,7 @@ export * from './collaborator.entity';
 export * from './collaborator-project-rate.entity';
 export * from './enums';
 export * from './expense.entity';
+export * from './expense-project.entity';
 export * from './health-check.entity';
 export * from './monthly-exchange-rate.entity';
 export * from './project-collaborator.entity';
@@ -47,6 +49,7 @@ export const entities = [
   ClientHoursAlertEntity,
   TimeEntryEntity,
   ExpenseEntity,
+  ExpenseProjectEntity,
   HealthCheckEntity,
   MonthlyExchangeRateEntity,
   TicketEntity,
