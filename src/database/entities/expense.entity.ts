@@ -20,9 +20,6 @@ export class ExpenseEntity {
   @Column({ type: 'enum', enum: ExpensePeriodicity, enumName: 'expense_periodicity', default: ExpensePeriodicity.UNICO })
   periodicity: ExpensePeriodicity;
 
-  @Column({ name: 'project_id', type: 'text', nullable: true })
-  projectId: string | null;
-
   @Column({ name: 'payment_method', type: 'text', nullable: true })
   paymentMethod: string | null;
 

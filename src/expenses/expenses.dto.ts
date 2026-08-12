@@ -5,7 +5,7 @@ export interface CreateExpenseDto {
   amount: number;
   currency?: BillingCurrency;
   periodicity?: ExpensePeriodicity;
-  projectId?: string | null;
+  projectIds?: string[];
   paymentMethod?: string | null;
   alternativePaymentMethod?: string | null;
   paymentAccess?: string | null;
@@ -26,7 +26,7 @@ export interface CreateExpenseInstallmentsDto {
   installmentsCount: number;
   firstInstallmentDate: string;
   currency?: BillingCurrency;
-  projectId?: string | null;
+  projectIds?: string[];
   paymentMethod?: string | null;
   alternativePaymentMethod?: string | null;
   paymentAccess?: string | null;
