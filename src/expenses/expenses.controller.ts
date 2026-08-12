@@ -5,7 +5,7 @@ import { UserRole } from '../auth/auth.types';
 import { AuthenticatedRequest, FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ExpensesService } from './expenses.service';
-import type { CreateExpenseDto, UpdateExpenseDto } from './expenses.dto';
+import type { CreateExpenseDto, CreateExpenseInstallmentsDto, UpdateExpenseDto } from './expenses.dto';
 
 // A diferencia de proyectos/clientes, acá ni siquiera la lectura queda abierta:
 // los gastos de la empresa solo los ve/gestiona admin (Super Admin) y contable.
@@ -28,6 +28,11 @@ export class ExpensesController {
   @Post()
   create(@Body() body: CreateExpenseDto, @CurrentUser() user: AuthenticatedRequest['user']) {
     return this.expensesService.create(body, user.email);
+  }
+
+  @Post('installments')
+  createInstallments(@Body() body: CreateExpenseInstallmentsDto, @CurrentUser() user: AuthenticatedRequest['user']) {
+    return this.expensesService.createInstallments(body, user.email);
   }
 
   @Patch(':id')
