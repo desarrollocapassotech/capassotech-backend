@@ -49,6 +49,7 @@ export class ExpensesService {
       periodicity: dto.periodicity ?? undefined,
       projectId: dto.projectId ?? null,
       paymentMethod: dto.paymentMethod ?? null,
+      alternativePaymentMethod: dto.alternativePaymentMethod ?? null,
       category: dto.category ?? null,
       expenseDate: dto.expenseDate ?? null,
       notes: dto.notes ?? null,
@@ -79,6 +80,7 @@ export class ExpensesService {
     if (dto.periodicity !== undefined) existing.periodicity = dto.periodicity;
     if (dto.projectId !== undefined) existing.projectId = dto.projectId;
     if (dto.paymentMethod !== undefined) existing.paymentMethod = dto.paymentMethod;
+    if (dto.alternativePaymentMethod !== undefined) existing.alternativePaymentMethod = dto.alternativePaymentMethod;
     if (dto.category !== undefined) existing.category = dto.category;
     if (dto.expenseDate !== undefined) existing.expenseDate = dto.expenseDate;
     if (dto.notes !== undefined) existing.notes = dto.notes;
@@ -139,6 +141,7 @@ export class ExpensesService {
         ['Periodicidad', expense.periodicity === 'mensual' ? 'Mensual' : 'Único'],
         ['Proyecto', projectName ?? 'Sin proyecto asociado'],
         ['Medio de pago', expense.paymentMethod ?? '-'],
+        ['Forma de pago alternativa', expense.alternativePaymentMethod ?? '-'],
         ['Categoría', expense.category ?? '-'],
         ['Fecha', expense.expenseDate ?? '-'],
         ['Notas', expense.notes ?? '-'],
