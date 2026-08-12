@@ -8,6 +8,7 @@ export interface CreateExpenseDto {
   projectId?: string | null;
   paymentMethod?: string | null;
   alternativePaymentMethod?: string | null;
+  paymentAccess?: string | null;
   category?: string | null;
   expenseDate?: string | null;
   notes?: string | null;

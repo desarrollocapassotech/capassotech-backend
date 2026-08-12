@@ -29,6 +29,10 @@ export class ExpenseEntity {
   @Column({ name: 'alternative_payment_method', type: 'text', nullable: true })
   alternativePaymentMethod: string | null;
 
+  // Cómo acceder al pago (ej: en qué cuenta/plataforma entrar, con qué usuario).
+  @Column({ name: 'payment_access', type: 'text', nullable: true })
+  paymentAccess: string | null;
+
   @Column({ type: 'text', nullable: true })
   category: string | null;
 
