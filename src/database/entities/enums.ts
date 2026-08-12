@@ -42,4 +42,5 @@ export enum ProjectCollaboratorRole {
 export enum ExpensePeriodicity {
   UNICO = 'unico',
   MENSUAL = 'mensual',
+  ANUAL = 'anual',
 }

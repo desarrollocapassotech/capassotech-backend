@@ -8,6 +8,12 @@ import { CreateExpenseDto, CreateExpenseInstallmentsDto, UpdateExpenseDto } from
 import { buildExpenseNotificationHtml } from './expense-notification.template';
 import { addMonthsToDateString, splitAmountIntoInstallments } from './installment.util';
 
+function formatPeriodicity(periodicity: ExpensePeriodicity): string {
+  if (periodicity === ExpensePeriodicity.MENSUAL) return 'Mensual';
+  if (periodicity === ExpensePeriodicity.ANUAL) return 'Anual';
+  return 'Único';
+}
+
 @Injectable()
 export class ExpensesService {
   private readonly logger = new Logger(ExpensesService.name);
@@ -196,7 +202,7 @@ export class ExpensesService {
       const rows: [string, string][] = [
         ['Concepto', expense.description],
         ['Monto', `${Number(expense.amount).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${expense.currency}`],
-        ['Periodicidad', expense.periodicity === 'mensual' ? 'Mensual' : 'Único'],
+        ['Periodicidad', formatPeriodicity(expense.periodicity)],
         ['Proyecto', projectName ?? 'Sin proyecto asociado'],
         ['Medio de pago', expense.paymentMethod ?? '-'],
         ['Forma de pago alternativa', expense.alternativePaymentMethod ?? '-'],
