@@ -7,6 +7,7 @@ export interface CreateExpenseDto {
   periodicity?: ExpensePeriodicity;
   projectId?: string | null;
   paymentMethod?: string | null;
+  alternativePaymentMethod?: string | null;
   category?: string | null;
   expenseDate?: string | null;
   notes?: string | null;

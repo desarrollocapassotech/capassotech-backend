@@ -26,6 +26,9 @@ export class ExpenseEntity {
   @Column({ name: 'payment_method', type: 'text', nullable: true })
   paymentMethod: string | null;
 
+  @Column({ name: 'alternative_payment_method', type: 'text', nullable: true })
+  alternativePaymentMethod: string | null;
+
   @Column({ type: 'text', nullable: true })
   category: string | null;
 
