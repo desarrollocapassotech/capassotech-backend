@@ -13,10 +13,12 @@ import { assertValidImageFile, buildCollaboratorImagePath } from '../common/prof
 import {
   AppUserEntity,
   BillingCurrency,
+  ClientEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   ProjectCollaboratorEntity,
   ProjectCollaboratorRole,
+  ProjectEntity,
   TimeEntryEntity,
   UserRole,
 } from '../database/entities';
@@ -99,6 +101,10 @@ export class CollaboratorsService {
     private readonly assignmentRepository: Repository<ProjectCollaboratorEntity>,
     @InjectRepository(TimeEntryEntity)
     private readonly timeEntryRepository: Repository<TimeEntryEntity>,
+    @InjectRepository(ClientEntity)
+    private readonly clientRepository: Repository<ClientEntity>,
+    @InjectRepository(ProjectEntity)
+    private readonly projectRepository: Repository<ProjectEntity>,
     private readonly authService: AuthService,
   ) {}
 
@@ -133,11 +139,13 @@ export class CollaboratorsService {
   // autenticado (ver comentario en el controller), pero eso no debe filtrar
   // sueldo/CBU de TODO el equipo a cualquier colaborador. Ven estos campos sin
   // enmascarar: admin, contable, el propio colaborador sobre su propio registro
-  // (mismo criterio que resolveAllowedFields para edición), y un
-  // project_manager sobre los colaboradores asignados a los proyectos que
-  // gestiona (ProjectManagerPanel.tsx necesita el hourlyRate de su equipo para
-  // calcular las horas facturables). `managedCollaboratorIds` se resuelve una
-  // sola vez por request vía resolveManagedCollaboratorIds, no acá, para no
+  // (mismo criterio que resolveAllowedFields para edición), un project_manager
+  // sobre los colaboradores asignados a los proyectos que gestiona
+  // (ProjectManagerPanel.tsx necesita el hourlyRate de su equipo para calcular
+  // las horas facturables), y un client sobre los colaboradores que cargaron
+  // horas en sus propios proyectos (ClientPanel.tsx/ClientHistory.tsx necesitan
+  // ese hourlyRate para el mismo cálculo). `managedCollaboratorIds` se resuelve
+  // una sola vez por request vía resolveManagedCollaboratorIds, no acá, para no
   // disparar una query por colaborador en el listado.
   maskFinancialsForRequester(
     collaborator: CollaboratorResponse,
@@ -156,38 +164,59 @@ export class CollaboratorsService {
     return masked as CollaboratorResponse;
   }
 
-  // Resuelve, para un project_manager, el conjunto de colaboradores "visibles"
-  // en los proyectos que gestiona: no alcanza con los asignados formalmente en
-  // project_collaborators (team member/manager), porque alguien puede haber
-  // cargado horas en el proyecto sin estar asignado ahí (ej. un admin cubriendo
-  // una tarea puntual) y el cálculo de horas facturables del panel de PM
-  // (calculateBillableHours) necesita el hourlyRate de TODOS los que le cargaron
-  // horas ese mes, no solo del equipo formal. Devuelve un Set vacío para
-  // cualquier otro rol o si el requester no tiene un colaborador asociado.
+  // Resuelve los proyectos sobre los que el requester tiene visibilidad para
+  // destapar el hourlyRate de sus colaboradores (ver resolveManagedCollaboratorIds):
+  // - project_manager: los proyectos que gestiona (asignación MANAGER).
+  // - client: los proyectos de su propia cuenta de cliente (ClientPanel.tsx /
+  //   ClientHistory.tsx necesitan el hourlyRate de los colaboradores que les
+  //   cargaron horas para calcular horas facturables, ver computeBillableHoursDetails
+  //   en el frontend).
+  // Cualquier otro rol no tiene proyectos "propios" por este mecanismo.
+  private async resolveVisibleProjectIds(requester: RequesterContext): Promise<string[]> {
+    if (requester.roles.includes(UserRole.PROJECT_MANAGER)) {
+      const ownCollaborator = await this.collaboratorRepository.findOneBy({ userId: requester.uid });
+      if (!ownCollaborator) {
+        return [];
+      }
+      const managerAssignments = await this.assignmentRepository.find({
+        where: { collaboratorId: ownCollaborator.id, role: ProjectCollaboratorRole.MANAGER },
+      });
+      return managerAssignments.map((a) => a.projectId);
+    }
+
+    if (requester.roles.includes(UserRole.CLIENT)) {
+      const ownClient = await this.clientRepository.findOneBy({ userId: requester.uid });
+      if (!ownClient) {
+        return [];
+      }
+      const ownProjects = await this.projectRepository.find({ where: { clientId: ownClient.id } });
+      return ownProjects.map((p) => p.id);
+    }
+
+    return [];
+  }
+
+  // Resuelve, para un project_manager o un client, el conjunto de colaboradores
+  // "visibles" en los proyectos que gestiona/le pertenecen: no alcanza con los
+  // asignados formalmente en project_collaborators (team member/manager), porque
+  // alguien puede haber cargado horas en el proyecto sin estar asignado ahí (ej.
+  // un admin cubriendo una tarea puntual) y el cálculo de horas facturables
+  // (calculateBillableHours / computeBillableHoursDetails) necesita el hourlyRate
+  // de TODOS los que le cargaron horas ese mes, no solo del equipo formal.
+  // Devuelve un Set vacío para cualquier otro rol o si el requester no tiene
+  // proyectos visibles.
   async resolveManagedCollaboratorIds(requester: RequesterContext): Promise<Set<string>> {
-    if (!requester.roles.includes(UserRole.PROJECT_MANAGER)) {
-      return new Set();
-    }
-
-    const ownCollaborator = await this.collaboratorRepository.findOneBy({ userId: requester.uid });
-    if (!ownCollaborator) {
-      return new Set();
-    }
-
-    const managerAssignments = await this.assignmentRepository.find({
-      where: { collaboratorId: ownCollaborator.id, role: ProjectCollaboratorRole.MANAGER },
-    });
-    const managedProjectIds = managerAssignments.map((a) => a.projectId);
-    if (managedProjectIds.length === 0) {
+    const visibleProjectIds = await this.resolveVisibleProjectIds(requester);
+    if (visibleProjectIds.length === 0) {
       return new Set();
     }
 
     const [teamAssignments, timeEntryRows] = await Promise.all([
-      this.assignmentRepository.find({ where: { projectId: In(managedProjectIds) } }),
+      this.assignmentRepository.find({ where: { projectId: In(visibleProjectIds) } }),
       this.timeEntryRepository
         .createQueryBuilder('te')
         .select('DISTINCT te.collaborator_id', 'collaboratorId')
-        .where('te.project_id IN (:...projectIds)', { projectIds: managedProjectIds })
+        .where('te.project_id IN (:...projectIds)', { projectIds: visibleProjectIds })
         .getRawMany<{ collaboratorId: string }>(),
     ]);
 
