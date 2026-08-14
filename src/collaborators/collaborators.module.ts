@@ -3,9 +3,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import {
   AppUserEntity,
+  ClientEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   ProjectCollaboratorEntity,
+  ProjectEntity,
   TimeEntryEntity,
 } from '../database/entities';
 import { CollaboratorReceiptService } from './collaborator-receipt.service';
@@ -20,6 +22,8 @@ import { CollaboratorsService } from './collaborators.service';
       CollaboratorProjectRateEntity,
       ProjectCollaboratorEntity,
       TimeEntryEntity,
+      ClientEntity,
+      ProjectEntity,
     ]),
     AuthModule,
   ],
