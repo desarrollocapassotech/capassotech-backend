@@ -226,7 +226,7 @@ export class TimeEntriesService {
   // Red de seguridad: reintenta lo que haya quedado sin confirmar (falla de red,
   // Apps Script caído, cuota excedida, etc). Corre solo, y también queda expuesto
   // para forzarlo manualmente desde el endpoint de admin.
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_HOUR)
   async resyncPendingSheetEntries(): Promise<SheetSyncRunResult> {
     const pending = await this.timeEntryRepository.find({
       where: { sheetSyncedAt: IsNull() },
