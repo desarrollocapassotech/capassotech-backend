@@ -27,6 +27,7 @@ export enum TaskBillingType {
   EXTERNAL_BUG = 'external_bug',
   INTERNAL_MEETING = 'internal_meeting',
   EXTERNAL_MEETING = 'external_meeting',
+  SUPPORT = 'support',
 }
 
 export enum BillableBaseFactorStrategy {

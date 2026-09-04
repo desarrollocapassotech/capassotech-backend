@@ -94,7 +94,8 @@ CREATE TYPE tracker.task_billing_type AS ENUM (
   'internal_bug',
   'external_bug',
   'internal_meeting',
-  'external_meeting'
+  'external_meeting',
+  'support'
 );
 
 -- utils.ts -> BillableBaseFactorStrategy (dentro de billable_config)
