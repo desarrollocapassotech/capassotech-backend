@@ -8,6 +8,8 @@ import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entit
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseProjectEntity } from './expense-project.entity';
 import { HealthCheckEntity } from './health-check.entity';
+import { IncomeEntity } from './income.entity';
+import { IncomeProjectEntity } from './income-project.entity';
 import { MonthlyExchangeRateEntity } from './monthly-exchange-rate.entity';
 import { ProjectCollaboratorEntity } from './project-collaborator.entity';
 import { ProjectDeliverableEntity } from './project-deliverable.entity';
@@ -29,6 +31,8 @@ export * from './enums';
 export * from './expense.entity';
 export * from './expense-project.entity';
 export * from './health-check.entity';
+export * from './income.entity';
+export * from './income-project.entity';
 export * from './monthly-exchange-rate.entity';
 export * from './project-collaborator.entity';
 export * from './project-deliverable.entity';
@@ -54,6 +58,8 @@ export const entities = [
   ExpenseEntity,
   ExpenseProjectEntity,
   HealthCheckEntity,
+  IncomeEntity,
+  IncomeProjectEntity,
   MonthlyExchangeRateEntity,
   TicketEntity,
   TicketMessageEntity,
