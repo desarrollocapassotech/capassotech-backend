@@ -12,6 +12,8 @@ export interface CreateTimeEntryDto {
   hours: number;
   comments?: string | null;
   taskBillingType?: TaskBillingType;
+  /** Snapshot de "Story point estimate" traído de Jira al momento de cargar la hora; solo informativo. */
+  storyPoints?: number | null;
 }
 
 export type UpdateTimeEntryDto = Partial<CreateTimeEntryDto>;

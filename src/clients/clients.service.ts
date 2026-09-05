@@ -56,6 +56,7 @@ export class ClientsService {
     'analistaFuncionalIds',
     'profileImageUrl',
     'billableHoursLimit',
+    'jiraConnectionKey',
   ];
 
   // Un contable solo puede ajustar la configuración de horas facturables (igual
@@ -210,6 +211,7 @@ export class ClientsService {
       billableConfig: normalizeBillableConfig(dto.billableConfig),
       profileImageUrl: dto.profileImageUrl ?? null,
       billableHoursLimit: dto.billableHoursLimit != null ? String(dto.billableHoursLimit) : null,
+      jiraConnectionKey: dto.jiraConnectionKey ?? null,
     });
 
     const saved = await this.clientRepository.save(client);
