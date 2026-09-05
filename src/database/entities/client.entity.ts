@@ -80,6 +80,11 @@ export class ClientEntity {
   @Column({ name: 'billable_hours_limit', type: 'numeric', precision: 12, scale: 2, nullable: true })
   billableHoursLimit: string | null;
 
+  // Key de una entrada del array JIRA_CONNECTIONS (env var): qué site/credenciales
+  // de Jira usar para autocompletar tareas de este cliente. Null = sin Jira configurado.
+  @Column({ name: 'jira_connection_key', type: 'text', nullable: true })
+  jiraConnectionKey: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

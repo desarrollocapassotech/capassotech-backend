@@ -96,6 +96,7 @@ export class TimeEntriesService {
       hours: String(dto.hours),
       comments: dto.comments ?? null,
       taskBillingType: dto.taskBillingType ?? TaskBillingType.FEATURE,
+      storyPoints: dto.storyPoints != null ? String(dto.storyPoints) : null,
     });
 
     const saved = await this.timeEntryRepository.save(entry);
@@ -138,6 +139,9 @@ export class TimeEntriesService {
     if (dto.hours !== undefined) existing.hours = String(dto.hours);
     if (dto.comments !== undefined) existing.comments = dto.comments;
     if (dto.taskBillingType !== undefined) existing.taskBillingType = dto.taskBillingType;
+    if (dto.storyPoints !== undefined) {
+      existing.storyPoints = dto.storyPoints == null ? null : String(dto.storyPoints);
+    }
 
     return this.timeEntryRepository.save(existing);
   }

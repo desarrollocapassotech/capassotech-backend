@@ -38,6 +38,12 @@ export class TimeEntryEntity {
   @Column({ type: 'text', nullable: true })
   comments: string | null;
 
+  // Snapshot de "Story point estimate" tomado de Jira al cargar la hora (ver
+  // JiraService.getIssueForProject). Solo informativo: no interviene en
+  // ningún cálculo de facturación.
+  @Column({ name: 'story_points', type: 'numeric', precision: 6, scale: 2, nullable: true })
+  storyPoints: string | null;
+
   @Column({
     name: 'task_billing_type',
     type: 'enum',

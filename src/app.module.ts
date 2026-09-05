@@ -13,6 +13,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { HealthModule } from './health/health.module';
 import { HoursAlertsModule } from './hours-alerts/hours-alerts.module';
 import { IncomeModule } from './income/income.module';
+import { JiraModule } from './jira/jira.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { TicketStatesModule } from './ticket-states/ticket-states.module';
 import { UsersModule } from './users/users.module';
@@ -33,6 +34,7 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     HealthModule,
     HoursAlertsModule,
     IncomeModule,
+    JiraModule,
     TicketStatesModule,
     TicketsModule,
     UsersModule,

@@ -19,6 +19,7 @@ export interface CreateClientDto {
   analistaFuncionalIds?: string[];
   profileImageUrl?: string | null;
   billableHoursLimit?: number | null;
+  jiraConnectionKey?: string | null;
 }
 
 // Todos los campos son opcionales: el set efectivo que se aplica depende del rol
