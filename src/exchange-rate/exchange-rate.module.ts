@@ -9,5 +9,6 @@ import { ExchangeRateService } from './exchange-rate.service';
   imports: [TypeOrmModule.forFeature([MonthlyExchangeRateEntity]), AuthModule],
   controllers: [ExchangeRateController],
   providers: [ExchangeRateService],
+  exports: [ExchangeRateService],
 })
 export class ExchangeRateModule {}

@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { ClientPaymentsModule } from './client-payments/client-payments.module';
 import { ClientsModule } from './clients/clients.module';
 import { CollaboratorsModule } from './collaborators/collaborators.module';
+import { CollaboratorPerformanceModule } from './collaborator-performance/collaborator-performance.module';
 import { DatabaseModule } from './database/database.module';
 import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { ExpensesModule } from './expenses/expenses.module';
@@ -27,6 +28,7 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     DatabaseModule,
     AuthModule,
     CollaboratorsModule,
+    CollaboratorPerformanceModule,
     ClientsModule,
     ClientPaymentsModule,
     ExchangeRateModule,
