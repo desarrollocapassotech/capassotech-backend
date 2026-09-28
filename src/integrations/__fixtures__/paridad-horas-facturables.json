@@ -1,0 +1,725 @@
+{
+  "generadoCon": "capassotech-timetracker-frontend/src/lib/utils.ts#computeBillableHoursDetails",
+  "casos": [
+    {
+      "nombre": "default USD/USD",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {},
+      "task": "feature",
+      "esperado": {
+        "billableHours": 3.2,
+        "baseBillableHours": 2,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.2
+      }
+    },
+    {
+      "nombre": "colaborador ARS",
+      "hours": 8,
+      "project": {
+        "id": "p1",
+        "rate": 25,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 9000,
+        "currency": "ARS",
+        "projectRates": []
+      },
+      "usdRate": 1200,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 3.84,
+        "baseBillableHours": 2.4,
+        "appliedFactor": 3.3333333333333335,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.84
+      }
+    },
+    {
+      "nombre": "proyecto ARS",
+      "hours": 5.5,
+      "project": {
+        "id": "p1",
+        "rate": 40000,
+        "currency": "ARS",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 12,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1350.5,
+      "client": {
+        "billableConfig": null
+      },
+      "task": "support",
+      "esperado": {
+        "billableHours": 3.56532,
+        "baseBillableHours": 2.228325,
+        "appliedFactor": 2.4682216463038382,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.56532
+      }
+    },
+    {
+      "nombre": "override por proyecto",
+      "hours": 7,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": [
+          {
+            "projectId": "p1",
+            "hourlyRate": 15
+          }
+        ]
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 5.6000000000000005,
+        "baseBillableHours": 3.5,
+        "appliedFactor": 2,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 5.6000000000000005
+      }
+    },
+    {
+      "nombre": "override de otro proyecto",
+      "hours": 7,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": [
+          {
+            "projectId": "otro",
+            "hourlyRate": 15
+          }
+        ]
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 3.733333333333334,
+        "baseBillableHours": 2.3333333333333335,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.733333333333334
+      }
+    },
+    {
+      "nombre": "override de factor por colaborador",
+      "hours": 4,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "collaboratorOverrides": {
+            "c1": 2.5
+          }
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 2.5600000000000005,
+        "baseBillableHours": 1.6,
+        "appliedFactor": 2.5,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 2.5600000000000005
+      }
+    },
+    {
+      "nombre": "factor custom",
+      "hours": 4,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "baseFactorStrategy": "custom",
+          "customBaseFactor": "1,8"
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 3.555555555555556,
+        "baseBillableHours": 2.2222222222222223,
+        "appliedFactor": 1.8,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.555555555555556
+      }
+    },
+    {
+      "nombre": "custom sin factor cae a ratio",
+      "hours": 4,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "baseFactorStrategy": "custom"
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 2.1333333333333333,
+        "baseBillableHours": 1.3333333333333333,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 2.1333333333333333
+      }
+    },
+    {
+      "nombre": "markup custom",
+      "hours": 9,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "markupMultiplier": 2
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 6,
+        "baseBillableHours": 3,
+        "appliedFactor": 3,
+        "markupMultiplier": 2,
+        "usedHourlyCalculation": true,
+        "pantalla": 6
+      }
+    },
+    {
+      "nombre": "markup bug interno",
+      "hours": 9,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "internalBugMarkupMultiplier": 1.1
+        }
+      },
+      "task": "internal_bug",
+      "esperado": {
+        "billableHours": 3.3000000000000003,
+        "baseBillableHours": 3,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.1,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.3000000000000003
+      }
+    },
+    {
+      "nombre": "bug interno sin markup propio",
+      "hours": 9,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "internal_bug",
+      "esperado": {
+        "billableHours": 4.800000000000001,
+        "baseBillableHours": 3,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 4.800000000000001
+      }
+    },
+    {
+      "nombre": "horas fijas adicionales",
+      "hours": 2,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "additionalFixedHours": 0.5
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 1.5666666666666667,
+        "baseBillableHours": 0.6666666666666666,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 1.5666666666666667
+      }
+    },
+    {
+      "nombre": "mínimo facturable",
+      "hours": 3,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "minimumBillableHours": 2
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 2,
+        "baseBillableHours": 1,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 2
+      }
+    },
+    {
+      "nombre": "tope en horas trabajadas",
+      "hours": 3,
+      "project": {
+        "id": "p1",
+        "rate": 5,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 20,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "markupMultiplier": 10
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 3,
+        "baseBillableHours": 12,
+        "appliedFactor": 0.25,
+        "markupMultiplier": 10,
+        "usedHourlyCalculation": true,
+        "pantalla": 3
+      }
+    },
+    {
+      "nombre": "horas fijas negativas",
+      "hours": 1,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "additionalFixedHours": -5
+        }
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0,
+        "baseBillableHours": 0.3333333333333333,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "proyecto mensual",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "monthly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 6,
+        "baseBillableHours": 6,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "proyecto sin tipo",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 6,
+        "baseBillableHours": 6,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "proyecto sin tarifa",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0,
+        "baseBillableHours": 0,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "sin colaborador",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0,
+        "baseBillableHours": 0,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "cero horas",
+      "hours": 0,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0,
+        "baseBillableHours": 0,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "colaborador tarifa 0",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 0,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0.32000000000000006,
+        "baseBillableHours": 0.2,
+        "appliedFactor": 30,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 0.32000000000000006
+      }
+    },
+    {
+      "nombre": "usdRate inválido",
+      "hours": 6,
+      "project": {
+        "id": "p1",
+        "rate": 30000,
+        "currency": "ARS",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 0,
+      "client": {
+        "billableConfig": {}
+      },
+      "task": "feature",
+      "esperado": {
+        "billableHours": 0,
+        "baseBillableHours": 0,
+        "appliedFactor": 1,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": false,
+        "pantalla": 0
+      }
+    },
+    {
+      "nombre": "config con strings",
+      "hours": 7.25,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": [],
+        "exchangeRate": 900
+      },
+      "usdRate": 1000,
+      "client": {
+        "billableConfig": {
+          "markupMultiplier": "1,4",
+          "additionalFixedHours": "0.25",
+          "minimumBillableHours": "1"
+        }
+      },
+      "task": "external_meeting",
+      "esperado": {
+        "billableHours": 3.633333333333333,
+        "baseBillableHours": 2.4166666666666665,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.4,
+        "usedHourlyCalculation": true,
+        "pantalla": 3.633333333333333
+      }
+    },
+    {
+      "nombre": "sin cliente",
+      "hours": 5,
+      "project": {
+        "id": "p1",
+        "rate": 30,
+        "currency": "USD",
+        "billingType": "hourly"
+      },
+      "collaborator": {
+        "id": "c1",
+        "hourlyRate": 10,
+        "currency": "USD",
+        "projectRates": []
+      },
+      "usdRate": 1000,
+      "client": null,
+      "task": null,
+      "esperado": {
+        "billableHours": 2.666666666666667,
+        "baseBillableHours": 1.6666666666666667,
+        "appliedFactor": 3,
+        "markupMultiplier": 1.6,
+        "usedHourlyCalculation": true,
+        "pantalla": 2.666666666666667
+      }
+    }
+  ]
+}
