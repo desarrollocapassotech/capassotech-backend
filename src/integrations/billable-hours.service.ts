@@ -217,7 +217,9 @@ export class BillableHoursService {
         id: e.id,
         date: e.date,
         hours: e.hours,
-        billableHours: decimal(billableHours),
+        // 6 decimales: el Facturador suma los registros y redondea el total a 2; con menos
+        // precisión la suma podía diferir en 0,01 h de lo que muestra el tracker.
+        billableHours: decimal(billableHours, 6),
         billableDetail: {
           appliedFactor: decimal(details.appliedFactor, 6),
           markupMultiplier: decimal(details.markupMultiplier, 6),
