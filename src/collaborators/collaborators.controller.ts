@@ -117,7 +117,7 @@ export class CollaboratorsController {
 
   // Envía por email el mismo recibo de la vista previa (mismos permisos que
   // generateReceipt). El destinatario lo elige quien emite el recibo en el
-  // diálogo (por defecto, el email laboral o personal del colaborador).
+  // diálogo (por defecto, el email personal del colaborador, o el laboral si no tiene).
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.CONTABLE)
   @Post(':id/receipt/email')
@@ -134,7 +134,7 @@ export class CollaboratorsController {
     const slug = (value: string) => value.trim().replace(/\s+/g, '-').toLowerCase();
     const sent = await this.resendService.send({
       to: [to],
-      subject: `Recibo de pago — ${body.receipt.monthYear}`,
+      subject: `Recibo de pago - ${body.receipt.monthYear}`,
       html: buildCollaboratorReceiptEmailHtml(body.receipt),
       attachments: [
         { filename: `recibo-${slug(body.receipt.fullName)}-${slug(body.receipt.monthYear)}.pdf`, content: pdf },

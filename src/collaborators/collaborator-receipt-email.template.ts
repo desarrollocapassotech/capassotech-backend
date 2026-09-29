@@ -10,7 +10,7 @@ export function buildCollaboratorReceiptEmailHtml(receipt: GenerateCollaboratorR
   ];
   return buildEmailShell({
     eyebrow: 'Recibos',
-    title: `Recibo de pago — ${receipt.monthYear}`,
+    title: `Recibo de pago - ${receipt.monthYear}`,
     intro: 'Adjuntamos el recibo de pago en PDF. Resumen:',
     bodyHtml: `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${buildEmailRowsTable(rows)}</table>`,
   });
