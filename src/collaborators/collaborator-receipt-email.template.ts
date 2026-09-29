@@ -6,8 +6,11 @@ export function buildCollaboratorReceiptEmailHtml(receipt: GenerateCollaboratorR
     ['Colaborador', receipt.fullName],
     ['Período', receipt.monthYear],
     ['Fecha', receipt.date],
-    ['Total', `${receipt.total} ${receipt.currency ?? ''}`.trim()],
   ];
+  if (receipt.paymentMethod?.trim()) {
+    rows.push(['Método de pago', receipt.paymentMethod.trim()]);
+  }
+  rows.push(['Total', `${receipt.total} ${receipt.currency ?? ''}`.trim()]);
   return buildEmailShell({
     eyebrow: 'Recibos',
     title: `Recibo de pago - ${receipt.monthYear}`,
