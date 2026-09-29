@@ -5,6 +5,7 @@ export interface SendEmailOptions {
   to: string[];
   subject: string;
   html: string;
+  attachments?: Array<{ filename: string; content: Buffer }>;
 }
 
 // Cliente mínimo de la API HTTP de Resend (https://resend.com/docs/api-reference/emails/send-email),
@@ -26,14 +27,17 @@ export class ResendService {
     this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL') ?? 'notificaciones@capassotech.com';
   }
 
-  async send(options: SendEmailOptions): Promise<void> {
+  // Devuelve si el email efectivamente salió. Las notificaciones automáticas lo
+  // ignoran (no deben romper el request); los envíos pedidos explícitamente por
+  // el usuario (ej. recibo de colaborador) lo usan para reportar el error.
+  async send(options: SendEmailOptions): Promise<boolean> {
     if (!this.apiKey) {
       this.logger.warn('RESEND_API_KEY no está configurado; se omite el envío de email.');
-      return;
+      return false;
     }
     if (options.to.length === 0) {
       this.logger.warn('No hay destinatarios para el email; se omite el envío.');
-      return;
+      return false;
     }
 
     const response = await fetch('https://api.resend.com/emails', {
@@ -47,12 +51,18 @@ export class ResendService {
         to: options.to,
         subject: options.subject,
         html: options.html,
+        attachments: options.attachments?.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content.toString('base64'),
+        })),
       }),
     });
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       this.logger.error(`Resend respondió ${response.status} al enviar "${options.subject}": ${body}`);
+      return false;
     }
+    return true;
   }
 }
