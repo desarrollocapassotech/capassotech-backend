@@ -1,9 +1,11 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   Header,
+  InternalServerErrorException,
   Param,
   Patch,
   Post,
@@ -20,8 +22,13 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/auth.types';
 import { AuthenticatedRequest, FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { ResendService } from '../common/resend.service';
+import { buildCollaboratorReceiptEmailHtml } from './collaborator-receipt-email.template';
 import { CollaboratorReceiptService } from './collaborator-receipt.service';
-import type { GenerateCollaboratorReceiptDto } from './collaborator-receipt.dto';
+import type {
+  GenerateCollaboratorReceiptDto,
+  SendCollaboratorReceiptEmailDto,
+} from './collaborator-receipt.dto';
 import { CollaboratorsService } from './collaborators.service';
 import type {
   CreateCollaboratorDto,
@@ -39,6 +46,7 @@ export class CollaboratorsController {
     private readonly collaboratorsService: CollaboratorsService,
     private readonly authService: AuthService,
     private readonly collaboratorReceiptService: CollaboratorReceiptService,
+    private readonly resendService: ResendService,
   ) {}
 
   @Get()
@@ -105,6 +113,37 @@ export class CollaboratorsController {
     await this.collaboratorsService.findOne(id); // 404 si no existe
     const pdf = await this.collaboratorReceiptService.generate(body);
     return new StreamableFile(pdf);
+  }
+
+  // Envía por email el mismo recibo de la vista previa (mismos permisos que
+  // generateReceipt). El destinatario lo elige quien emite el recibo en el
+  // diálogo (por defecto, el email personal del colaborador, o el laboral si no tiene).
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.ADMIN, UserRole.CONTABLE)
+  @Post(':id/receipt/email')
+  async sendReceiptEmail(
+    @Param('id') id: string,
+    @Body() body: SendCollaboratorReceiptEmailDto,
+  ): Promise<{ sent: true }> {
+    const to = body.to?.trim();
+    if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      throw new BadRequestException('El email del destinatario no es válido.');
+    }
+    await this.collaboratorsService.findOne(id); // 404 si no existe
+    const pdf = await this.collaboratorReceiptService.generate(body.receipt);
+    const slug = (value: string) => value.trim().replace(/\s+/g, '-').toLowerCase();
+    const sent = await this.resendService.send({
+      to: [to],
+      subject: `Recibo de pago - ${body.receipt.monthYear}`,
+      html: buildCollaboratorReceiptEmailHtml(body.receipt),
+      attachments: [
+        { filename: `recibo-${slug(body.receipt.fullName)}-${slug(body.receipt.monthYear)}.pdf`, content: pdf },
+      ],
+    });
+    if (!sent) {
+      throw new InternalServerErrorException('No se pudo enviar el email. Revisá la configuración de Resend.');
+    }
+    return { sent: true };
   }
 
   // Foto de perfil: mismo criterio de permisos que update() (ver

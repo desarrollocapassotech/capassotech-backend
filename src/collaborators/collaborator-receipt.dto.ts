@@ -18,3 +18,10 @@ export interface GenerateCollaboratorReceiptDto {
   // como subtítulo debajo del header "MONTO" (ver collaborator-receipt.service.ts).
   currency: string;
 }
+
+// Envío por email: mismo payload que la vista previa (el PDF se regenera acá en
+// vez de subirlo desde el navegador) más el destinatario elegido en el diálogo.
+export interface SendCollaboratorReceiptEmailDto {
+  to: string;
+  receipt: GenerateCollaboratorReceiptDto;
+}

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
+import { ResendService } from '../common/resend.service';
 import {
   AppUserEntity,
   ClientEntity,
@@ -28,7 +29,7 @@ import { CollaboratorsService } from './collaborators.service';
     AuthModule,
   ],
   controllers: [CollaboratorsController],
-  providers: [CollaboratorsService, CollaboratorReceiptService],
+  providers: [CollaboratorsService, CollaboratorReceiptService, ResendService],
   exports: [CollaboratorsService],
 })
 export class CollaboratorsModule {}
