@@ -11,11 +11,11 @@ import {
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { BillableHoursService } from './billable-hours.service';
 import { FacturadorAccessService } from './facturador-access.service';
-import { IntegrationKeyGuard } from './integration-key.guard';
+import { FacturadorClient } from './facturador.client';
 import { IntegrationsController } from './integrations.controller';
 
-// Integración con el Facturador: horas facturables (servidor a servidor) y acceso
-// sin doble login. No modifica ningún otro módulo.
+// Integración con el Facturador: cliente de su API pública, horas facturables (para la
+// pantalla Facturación) y acceso sin doble login para configurarlo.
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -29,10 +29,7 @@ import { IntegrationsController } from './integrations.controller';
     ExchangeRateModule,
   ],
   controllers: [IntegrationsController],
-  providers: [
-    BillableHoursService,
-    FacturadorAccessService,
-    IntegrationKeyGuard,
-  ],
+  providers: [BillableHoursService, FacturadorAccessService, FacturadorClient],
+  exports: [BillableHoursService, FacturadorClient],
 })
 export class IntegrationsModule {}
