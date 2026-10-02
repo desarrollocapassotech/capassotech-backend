@@ -8,6 +8,9 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 
+/** El plan gratuito de Render apaga el Facturador a los 15 min sin uso: alcanza con un ping cada 4. */
+const INTERVALO_DESPERTAR_MS = 4 * 60_000;
+
 export interface OpcionesFacturador {
   body?: unknown;
   query?: Record<string, string | string[] | number | undefined>;
@@ -26,12 +29,33 @@ export interface OpcionesFacturador {
 @Injectable()
 export class FacturadorClient {
   private readonly logger = new Logger(FacturadorClient.name);
+  private ultimoDespertar = 0;
 
   constructor(private readonly config: ConfigService) {}
 
   get configurado(): boolean {
     return Boolean(
       this.base() && this.config.get<string>('FACTURADOR_API_KEY'),
+    );
+  }
+
+  /**
+   * Ping en segundo plano a /health para que el Facturador ya esté encendido cuando se
+   * use. No espera la respuesta ni falla: como mucho uno cada 4 minutos.
+   */
+  despertar(): void {
+    const base = this.base();
+    if (!base || Date.now() - this.ultimoDespertar < INTERVALO_DESPERTAR_MS)
+      return;
+    this.ultimoDespertar = Date.now();
+    // Arrancar el servicio dormido puede tardar cerca de un minuto.
+    fetch(`${base}/health`, { signal: AbortSignal.timeout(90_000) }).catch(
+      (error: Error) => {
+        this.ultimoDespertar = 0;
+        this.logger.warn(
+          `No se pudo despertar al Facturador: ${error.message}`,
+        );
+      },
     );
   }
 
