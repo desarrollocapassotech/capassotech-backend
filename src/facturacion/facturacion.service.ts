@@ -4,16 +4,19 @@ import {
   HttpException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ClientEntity, ProjectEntity } from '../database/entities';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { BillableHoursService } from '../integrations/billable-hours.service';
 import { FacturadorClient } from '../integrations/facturador.client';
 import {
   armarResumen,
   cuitValido,
+  datosCliente,
   MES,
   nombreMes,
   rangoMes,
@@ -89,18 +92,32 @@ export class FacturacionService {
     private readonly clients: Repository<ClientEntity>,
     private readonly horas: BillableHoursService,
     private readonly facturador: FacturadorClient,
+    private readonly tipoDeCambio: ExchangeRateService,
   ) {}
 
   // ── Resumen del mes ──────────────────────────────────────────────────────
 
+  /** TC del mes del tracker (el fijado a mano o, si no hay, el oficial del día). */
+  private async cotizacion(mes: string) {
+    const { rate, locked } = await this.tipoDeCambio.getUsdRate(mes);
+    // Si no hay TC fijado y no se pudo consultar el del día, getUsdRate devuelve 1: no sirve para facturar.
+    if (!locked && rate <= 1) {
+      throw new ServiceUnavailableException(
+        'No se pudo obtener el tipo de cambio del día: fijá el del mes para poder facturar.',
+      );
+    }
+    return { valor: rate, fijada: locked };
+  }
+
   private async calcular(mes: string) {
     const { desde, hasta } = rangoMes(mes);
-    const [horas, proyectos, clientes] = await Promise.all([
+    const [horas, proyectos, clientes, cotizacion] = await Promise.all([
       this.horas.listar(desde, hasta),
       this.projects.find(),
       this.clients.find(),
+      this.cotizacion(mes),
     ]);
-    return armarResumen(
+    const r = armarResumen(
       mes,
       horas.entries.map((e) => ({
         date: e.date,
@@ -117,7 +134,9 @@ export class FacturacionService {
         clientId: p.clientId,
       })),
       clientes,
+      cotizacion.valor,
     );
+    return { ...r, cotizacion };
   }
 
   /** Cliente del Facturador para cada cliente del tracker (o cómo se va a resolver). */
@@ -197,6 +216,7 @@ export class FacturacionService {
     return {
       mes,
       periodo: nombreMes(mes),
+      cotizacion: r.cotizacion,
       advertencias: r.advertencias,
       clientes: r.clientes.map((c) => {
         const estado = estados.get(c.id)!;
@@ -459,5 +479,42 @@ export class FacturacionService {
       await this.vincular(existente.id, clienteTrackerId, email);
       return existente;
     }
+  }
+
+  // ── Factura manual ───────────────────────────────────────────────────────
+
+  /** Clientes del tracker para la factura manual, con cómo se resuelve cada uno en el Facturador. */
+  async clientesTracker(email?: string) {
+    const clientes = (await this.clients.find())
+      .map(datosCliente)
+      .sort((a, b) => a.razonSocial.localeCompare(b.razonSocial));
+    const estados = await this.estadoClientes(clientes, email);
+    return clientes.map((c) => ({ ...c, alta: estados.get(c.id)!.alta }));
+  }
+
+  /**
+   * Factura manual a un cliente del tracker: se resuelve su cliente del Facturador (asociándolo
+   * o dándolo de alta, como al facturar el mes) y se crea el borrador con ese id.
+   */
+  async crearBorrador(body: Record<string, unknown>, email?: string) {
+    const { clienteTrackerId, ...resto } = body ?? {};
+    if (typeof clienteTrackerId !== 'string' || !clienteTrackerId) {
+      throw new BadRequestException('Elegí el cliente.');
+    }
+    const entidad = await this.clients.findOneBy({ id: clienteTrackerId });
+    if (!entidad)
+      throw new NotFoundException('Cliente del tracker no encontrado.');
+    const c = datosCliente(entidad);
+    const estado = (await this.estadoClientes([c], email)).get(c.id)!;
+    if (estado.alta === 'faltan-datos') {
+      throw new UnprocessableEntityException(
+        `${c.razonSocial} no tiene CUIT válido en el tracker: dalo de alta en el Facturador desde "Para facturar".`,
+      );
+    }
+    const clienteId = await this.resolverCliente(c, estado, email);
+    return this.facturador.pedir('POST', '/comprobantes', {
+      body: { ...resto, clienteId },
+      email,
+    });
   }
 }

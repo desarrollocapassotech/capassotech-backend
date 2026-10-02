@@ -1,7 +1,8 @@
 // Qué hay para facturar en un mes, con la misma regla que Ingresos (IncomeManagement):
-// - Proyecto por hora: horas facturables del mes × tarifa del proyecto.
+// - Proyecto por hora: horas facturables del mes (redondeadas para arriba a la media hora) × tarifa del proyecto.
 // - Proyecto mensual (activo): 1 abono × tarifa del proyecto.
-// Siempre en la moneda del proyecto. Función pura: no consulta la base ni el Facturador.
+// Se factura siempre en pesos: lo de proyectos en USD se pasa a ARS con el tipo de cambio del
+// mes (el que recibe). Función pura: no consulta la base ni el Facturador.
 
 const MESES = [
   'Enero',
@@ -100,8 +101,10 @@ export interface LineaResumen {
   cantidad: string;
   unidad: 'HORA' | 'MES';
   precioUnitario: string | null;
-  moneda: 'USD' | 'ARS';
+  moneda: 'ARS';
   importe: string | null;
+  /** Tarifa e importe en dólares si el proyecto es en USD (solo de referencia: se factura en pesos). */
+  original: { moneda: 'USD'; precioUnitario: string; importe: string } | null;
   periodo: { desde: string; hasta: string };
   /** Si no se puede facturar tal como está (ej. el proyecto no tiene tarifa). */
   problema: string | null;
@@ -116,6 +119,12 @@ export interface Resumen {
 
 const dos = (n: number) =>
   (Math.round((n + Number.EPSILON) * 100) / 100).toFixed(2);
+/**
+ * Las horas se facturan redondeadas para arriba a la media hora: 67.77 → 68, 35.42 → 35.5.
+ * Antes se redondea a 4 decimales para que el ruido de sumar decimales (3.0000001) no sume media hora.
+ */
+const mediaHoraArriba = (n: number) =>
+  (Math.ceil(Math.round(n * 10000) / 5000) / 2).toFixed(2);
 /** "12.50" → "12.5", "1.00" → "1". */
 const limpio = (s: string) => String(Number(s));
 
@@ -140,6 +149,8 @@ export function armarResumen(
   registros: RegistroFacturable[],
   proyectos: ProyectoTracker[],
   clientes: ClienteTracker[],
+  /** Pesos por dólar con que se pasan a ARS los proyectos en USD. */
+  cotizacionUsd: number,
 ): Resumen {
   const periodo = rangoMes(mes);
   const texto = nombreMes(mes);
@@ -160,7 +171,7 @@ export function armarResumen(
   for (const p of proyectos) {
     const mensual = p.billingType === 'monthly';
     if (mensual ? !p.active : !horas.has(p.id)) continue;
-    const cantidadHoras = dos(horas.get(p.id) ?? 0);
+    const cantidadHoras = mediaHoraArriba(horas.get(p.id) ?? 0);
     if (!mensual && Number(cantidadHoras) <= 0) continue;
     const cliente = p.clientId ? clientePorId.get(p.clientId) : undefined;
     if (!cliente) {
@@ -170,6 +181,9 @@ export function armarResumen(
     const tarifa = p.rate != null && p.rate > 0 ? p.rate : null;
     if (mensual && !tarifa) continue; // como Ingresos: un abono sin monto no se cobra
     const cantidad = mensual ? '1' : limpio(cantidadHoras);
+    const enUsd = p.currency !== 'ARS';
+    const precioArs =
+      tarifa != null ? dos(enUsd ? tarifa * cotizacionUsd : tarifa) : null;
     lineas.push({
       referencia: `tracker:${cliente.id}:${p.id}:${mes}`,
       clienteId: cliente.id,
@@ -183,9 +197,18 @@ export function armarResumen(
         : `${p.name} - Horas ${texto}`,
       cantidad,
       unidad: mensual ? 'MES' : 'HORA',
-      precioUnitario: tarifa != null ? limpio(tarifa.toFixed(2)) : null,
-      moneda: p.currency === 'ARS' ? 'ARS' : 'USD',
-      importe: tarifa != null ? dos(Number(cantidad) * tarifa) : null,
+      precioUnitario: precioArs != null ? limpio(precioArs) : null,
+      moneda: 'ARS',
+      importe:
+        precioArs != null ? dos(Number(cantidad) * Number(precioArs)) : null,
+      original:
+        enUsd && tarifa != null
+          ? {
+              moneda: 'USD',
+              precioUnitario: limpio(tarifa.toFixed(2)),
+              importe: dos(Number(cantidad) * tarifa),
+            }
+          : null,
       periodo,
       problema:
         tarifa == null

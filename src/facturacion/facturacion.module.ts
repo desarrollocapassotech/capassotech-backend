@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { ClientEntity, ProjectEntity } from '../database/entities';
+import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { FacturacionController } from './facturacion.controller';
 import { FacturacionService } from './facturacion.service';
@@ -12,6 +13,7 @@ import { FacturacionService } from './facturacion.service';
     TypeOrmModule.forFeature([ProjectEntity, ClientEntity]),
     AuthModule,
     IntegrationsModule,
+    ExchangeRateModule,
   ],
   controllers: [FacturacionController],
   providers: [FacturacionService],
