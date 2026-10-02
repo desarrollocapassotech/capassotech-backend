@@ -51,6 +51,13 @@ export class FacturacionController {
     private readonly facturador: FacturadorClient,
   ) {}
 
+  /** Lo llama el frontend cuando un admin o contable usa el tracker. Responde sin esperar. */
+  @Post('despertar')
+  @HttpCode(202)
+  despertar() {
+    this.facturador.despertar();
+  }
+
   @Get('configuracion')
   async configuracion(@CurrentUser() u: Usuario) {
     if (!this.facturador.configurado) return { configurado: false };
