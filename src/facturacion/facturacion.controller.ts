@@ -97,6 +97,12 @@ export class FacturacionController {
     });
   }
 
+  /** Clientes del tracker (para la factura manual), con su estado en el Facturador. */
+  @Get('clientes-tracker')
+  clientesTracker(@CurrentUser() u: Usuario) {
+    return this.facturacion.clientesTracker(u.email);
+  }
+
   @Post('clientes')
   altaCliente(@CurrentUser() u: Usuario, @Body() body: AltaClienteDto) {
     return this.facturacion.altaCliente(body, u.email);
@@ -152,12 +158,10 @@ export class FacturacionController {
     });
   }
 
+  /** Factura manual: el cliente llega como cliente del tracker (`clienteTrackerId`). */
   @Post('comprobantes')
   crearBorrador(@CurrentUser() u: Usuario, @Body() body: Cuerpo) {
-    return this.facturador.pedir('POST', '/comprobantes', {
-      body,
-      email: u.email,
-    });
+    return this.facturacion.crearBorrador(body ?? {}, u.email);
   }
 
   @Get('comprobantes/:id')

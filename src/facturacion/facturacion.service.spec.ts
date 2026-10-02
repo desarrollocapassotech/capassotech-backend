@@ -3,6 +3,7 @@
 import { HttpException, UnprocessableEntityException } from '@nestjs/common';
 import type { Repository } from 'typeorm';
 import type { ClientEntity, ProjectEntity } from '../database/entities';
+import type { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import type { BillableHoursService } from '../integrations/billable-hours.service';
 import type {
   FacturadorClient,
@@ -95,6 +96,9 @@ function facturadorFalso(
       });
       return { importacion: { advertencias: [] }, items: cargados };
     }
+    if (metodo === 'POST' && ruta === '/comprobantes') {
+      return { id: 'manual1', clienteId: body.clienteId };
+    }
     if (metodo === 'POST' && ruta === '/comprobantes/borradores') {
       for (const r of body.referencias as string[]) {
         Object.assign(items.get(r)!, {
@@ -177,7 +181,10 @@ const clientesTracker = [
   },
 ];
 
-function servicio(f: ReturnType<typeof facturadorFalso>) {
+function servicio(
+  f: ReturnType<typeof facturadorFalso>,
+  cotizacion = { rate: 1000, locked: true },
+) {
   const horas = {
     listar: jest.fn().mockResolvedValue({
       entries: [
@@ -195,8 +202,20 @@ function servicio(f: ReturnType<typeof facturadorFalso>) {
     existsBy: jest.fn(({ id }: { id: string }) =>
       Promise.resolve(clientesTracker.some((c) => c.id === id)),
     ),
+    findOneBy: jest.fn(({ id }: { id: string }) =>
+      Promise.resolve(clientesTracker.find((c) => c.id === id) ?? null),
+    ),
   } as unknown as Repository<ClientEntity>;
-  return new FacturacionService(projects, clients, horas, f.client);
+  const tipoDeCambio = {
+    getUsdRate: jest.fn().mockResolvedValue(cotizacion),
+  } as unknown as ExchangeRateService;
+  return new FacturacionService(
+    projects,
+    clients,
+    horas,
+    f.client,
+    tipoDeCambio,
+  );
 }
 
 const EMAIL = 'contable@capasso.tech';
@@ -215,10 +234,13 @@ describe('FacturacionService', () => {
       id: 'fc-acme',
       razonSocial: 'Vinculado',
     });
+    expect(r.cotizacion).toEqual({ valor: 1000, fijada: true });
     expect(acme.lineas[0]).toMatchObject({
       cantidad: '7.5',
-      precioUnitario: '40',
-      importe: '300.00',
+      precioUnitario: '40000',
+      moneda: 'ARS',
+      importe: '300000.00',
+      original: { moneda: 'USD', precioUnitario: '40', importe: '300.00' },
       item: null,
       cambio: false,
     });
@@ -261,8 +283,8 @@ describe('FacturacionService', () => {
         cliente: { clienteId: 'fc1' },
         cantidad: '7.5',
         unidad: 'HORA',
-        precioUnitario: '40',
-        moneda: 'USD',
+        precioUnitario: '40000',
+        moneda: 'ARS',
       }),
       expect.objectContaining({
         referenciaExterna: 'tracker:c2:p2:2026-09',
@@ -357,5 +379,54 @@ describe('FacturacionService', () => {
     await expect(
       s.facturar({ mes: '09-2026', referencias: ['x'] }, EMAIL),
     ).rejects.toThrow(/YYYY-MM/);
+  });
+
+  it('factura manual: lista los clientes del tracker y al crear el borrador resuelve (o da de alta) su cliente del Facturador', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    expect((await s.clientesTracker(EMAIL)).map((c) => [c.id, c.alta])).toEqual(
+      [
+        ['c1', 'vinculado'],
+        ['c2', 'padron'],
+        ['c3', 'faltan-datos'],
+      ],
+    );
+
+    const lineas = [
+      { descripcion: 'Extra', cantidad: '1', precioUnitario: '1000' },
+    ];
+    await expect(
+      s.crearBorrador({ clienteTrackerId: 'c1', moneda: 'ARS', lineas }, EMAIL),
+    ).resolves.toEqual({ id: 'manual1', clienteId: 'fc-acme' });
+    // Beta todavía no estaba en el Facturador: se da de alta con el padrón y se usa ese id.
+    await expect(
+      s.crearBorrador({ clienteTrackerId: 'c2', lineas }, EMAIL),
+    ).resolves.toEqual({ id: 'manual1', clienteId: 'fc1' });
+    const creado = f.llamadas.filter(
+      (l) => l.metodo === 'POST' && l.ruta === '/comprobantes',
+    )[0];
+    expect(creado.opciones.body).toEqual({
+      moneda: 'ARS',
+      lineas,
+      clienteId: 'fc-acme',
+    });
+
+    await expect(
+      s.crearBorrador({ clienteTrackerId: 'c3', lineas }, EMAIL),
+    ).rejects.toThrow(UnprocessableEntityException);
+    await expect(s.crearBorrador({ lineas }, EMAIL)).rejects.toThrow(
+      /Elegí el cliente/,
+    );
+  });
+
+  it('sin TC fijado y sin poder consultar el del día no factura (no usa 1 como cotización)', async () => {
+    const s = servicio(facturadorFalso(), { rate: 1, locked: false });
+    await expect(s.resumen('2026-09', EMAIL)).rejects.toThrow(/tipo de cambio/);
+    await expect(
+      s.facturar(
+        { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] },
+        EMAIL,
+      ),
+    ).rejects.toThrow(/tipo de cambio/);
   });
 });
