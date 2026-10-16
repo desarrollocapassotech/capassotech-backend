@@ -24,7 +24,11 @@ import {
 } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { FacturadorClient } from '../integrations/facturador.client';
-import { FacturacionService, type AltaClienteDto } from './facturacion.service';
+import {
+  FacturacionService,
+  type AltaClienteDto,
+  type DatosEmitir,
+} from './facturacion.service';
 
 type Usuario = AuthenticatedRequest['user'];
 type Cuerpo = Record<string, unknown>;
@@ -35,6 +39,15 @@ function id(valor: string): string {
     throw new BadRequestException('Id inválido.');
   }
   return valor;
+}
+
+/** El frontend manda una clave por intento: reintentar nunca crea ni emite dos veces. */
+function claveIdempotencia(clave: string | undefined): string {
+  // Se le agregan sufijos (-items, -borrador): el Facturador acepta hasta 100 caracteres.
+  if (!clave || !/^[A-Za-z0-9_-]{8,80}$/.test(clave)) {
+    throw new BadRequestException('Falta el header Idempotency-Key.');
+  }
+  return clave;
 }
 
 /**
@@ -82,9 +95,19 @@ export class FacturacionController {
     return this.facturacion.resumen(mes, u.email);
   }
 
-  @Post('facturar')
-  facturar(@CurrentUser() u: Usuario, @Body() body: Cuerpo) {
-    return this.facturacion.facturar(body ?? {}, u.email);
+  /** Factura las líneas marcadas de un cliente y la emite en ARCA en el mismo pedido. */
+  @Post('emitir')
+  @HttpCode(200)
+  emitirDelMes(
+    @CurrentUser() u: Usuario,
+    @Headers('idempotency-key') clave: string | undefined,
+    @Body() body: DatosEmitir,
+  ) {
+    return this.facturacion.facturarYEmitir(
+      body ?? {},
+      claveIdempotencia(clave),
+      u.email,
+    );
   }
 
   // ── Clientes ─────────────────────────────────────────────────────────────
@@ -158,10 +181,19 @@ export class FacturacionController {
     });
   }
 
-  /** Factura manual: el cliente llega como cliente del tracker (`clienteTrackerId`). */
-  @Post('comprobantes')
-  crearBorrador(@CurrentUser() u: Usuario, @Body() body: Cuerpo) {
-    return this.facturacion.crearBorrador(body ?? {}, u.email);
+  /** Factura manual: el cliente llega como cliente del tracker (`clienteTrackerId`). Se crea y se emite. */
+  @Post('comprobantes/emitir')
+  @HttpCode(200)
+  emitirManual(
+    @CurrentUser() u: Usuario,
+    @Headers('idempotency-key') clave: string | undefined,
+    @Body() body: Cuerpo,
+  ) {
+    return this.facturacion.crearYEmitir(
+      body ?? {},
+      claveIdempotencia(clave),
+      u.email,
+    );
   }
 
   @Get('comprobantes/:id')
@@ -200,13 +232,10 @@ export class FacturacionController {
     @Headers('idempotency-key') clave: string | undefined,
     @Body() body: Cuerpo,
   ) {
-    if (!clave || !/^[A-Za-z0-9_-]{8,100}$/.test(clave)) {
-      throw new BadRequestException('Falta el header Idempotency-Key.');
-    }
     return this.facturador.pedir('POST', `/comprobantes/${id(c)}/emitir`, {
       body: body ?? {},
       email: u.email,
-      idempotencyKey: clave,
+      idempotencyKey: claveIdempotencia(clave),
     });
   }
 

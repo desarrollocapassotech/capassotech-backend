@@ -29,8 +29,29 @@ function facturadorFalso(
     numeroDocumento: string;
   }> = [];
   const items = new Map<string, Record<string, unknown>>();
+  const comprobantes = new Map<string, Record<string, any>>();
+  // Como el Facturador real: un POST repetido con la misma Idempotency-Key devuelve lo mismo.
+  const respuestas = new Map<string, unknown>();
+  /** Si se define, la emisión falla así (por ejemplo, un corte después de autorizar). */
+  let fallaAlEmitir: Error | null = null;
 
   const pedir = (
+    metodo: string,
+    ruta: string,
+    opciones: OpcionesFacturador = {},
+  ) => {
+    const clave = metodo === 'POST' ? opciones.idempotencyKey : undefined;
+    if (clave && respuestas.has(clave)) {
+      llamadas.push({ metodo, ruta, opciones });
+      return JSON.parse(JSON.stringify(respuestas.get(clave)));
+    }
+    const r = responder(metodo, ruta, opciones);
+    // Se guarda una copia, como el JSON que guarda el Facturador real.
+    if (clave) respuestas.set(clave, JSON.parse(JSON.stringify(r)));
+    return r;
+  };
+
+  const responder = (
     metodo: string,
     ruta: string,
     opciones: OpcionesFacturador = {},
@@ -97,22 +118,57 @@ function facturadorFalso(
       return { importacion: { advertencias: [] }, items: cargados };
     }
     if (metodo === 'POST' && ruta === '/comprobantes') {
-      return { id: 'manual1', clienteId: body.clienteId };
+      const c = {
+        id: 'manual1',
+        clienteId: body.clienteId,
+        estado: 'BORRADOR',
+        version: 0,
+      };
+      comprobantes.set(c.id, c);
+      return { ...c };
     }
     if (metodo === 'POST' && ruta === '/comprobantes/borradores') {
+      const id = `cmp${comprobantes.size + 1}`;
       for (const r of body.referencias as string[]) {
         Object.assign(items.get(r)!, {
           estado: 'EN_BORRADOR',
-          comprobanteId: 'cmp1',
+          comprobanteId: id,
         });
       }
-      return { comprobantes: [{ id: 'cmp1' }] };
+      comprobantes.set(id, { id, estado: 'BORRADOR', version: 0 });
+      return { comprobantes: [{ ...comprobantes.get(id) }] };
+    }
+    const [, , idCmp, accion] = ruta.split('/');
+    const cmp = ruta.startsWith('/comprobantes/')
+      ? comprobantes.get(idCmp)
+      : undefined;
+    if (cmp && metodo === 'GET' && !accion) return { ...cmp };
+    if (cmp && metodo === 'PATCH' && !accion) {
+      if (body.version !== cmp.version)
+        throw new HttpException({ message: 'Cambió' }, 409);
+      Object.assign(cmp, body, { version: cmp.version + 1 });
+      return { ...cmp };
+    }
+    if (cmp && metodo === 'POST' && accion === 'emitir') {
+      if (body.version !== cmp.version)
+        throw new HttpException({ message: 'Cambió' }, 409);
+      Object.assign(cmp, {
+        estado: 'EMITIDO',
+        numero: 1,
+        version: cmp.version + 1,
+      });
+      if (fallaAlEmitir) throw fallaAlEmitir;
+      return { ...cmp };
     }
     throw new Error(`Ruta no prevista: ${metodo} ${ruta}`);
   };
   return {
     llamadas,
     clientes,
+    comprobantes,
+    cortarAlEmitir(e: Error | null) {
+      fallaAlEmitir = e;
+    },
     client: {
       configurado: true,
       pedir: jest.fn((m: string, r: string, o?: OpcionesFacturador) =>
@@ -258,7 +314,7 @@ describe('FacturacionService', () => {
       },
       EMAIL,
     );
-    expect(r.comprobantes).toEqual([{ id: 'cmp1' }]);
+    expect(r.comprobantes).toEqual([expect.objectContaining({ id: 'cmp1' })]);
     expect(f.clientes.map((c) => (c as any).alta)).toEqual([
       expect.objectContaining({
         razonSocial: 'Acme SA',
@@ -405,11 +461,11 @@ describe('FacturacionService', () => {
     ];
     await expect(
       s.crearBorrador({ clienteTrackerId: 'c1', moneda: 'ARS', lineas }, EMAIL),
-    ).resolves.toEqual({ id: 'manual1', clienteId: 'fc-acme' });
+    ).resolves.toMatchObject({ id: 'manual1', clienteId: 'fc-acme' });
     // Beta todavía no estaba en el Facturador: se da de alta con el padrón y se usa ese id.
     await expect(
       s.crearBorrador({ clienteTrackerId: 'c2', lineas }, EMAIL),
-    ).resolves.toEqual({ id: 'manual1', clienteId: 'fc1' });
+    ).resolves.toMatchObject({ id: 'manual1', clienteId: 'fc1' });
     const creado = f.llamadas.filter(
       (l) => l.metodo === 'POST' && l.ruta === '/comprobantes',
     )[0];
@@ -425,6 +481,92 @@ describe('FacturacionService', () => {
     await expect(s.crearBorrador({ lineas }, EMAIL)).rejects.toThrow(
       /Elegí el cliente/,
     );
+  });
+
+  it('facturar y emitir: carga, arma el comprobante, aplica lo editado en el modal y lo emite', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const lineas = [
+      {
+        descripcion: 'Web',
+        cantidad: '8',
+        unidad: 'HORA',
+        precioUnitario: '40000',
+        alicuotaIva: '21',
+      },
+    ];
+    const r = await servicio(f).facturarYEmitir(
+      {
+        mes: '2026-09',
+        referencias: ['tracker:c1:p1:2026-09'],
+        fechaEmision: '2026-10-16',
+        fechaVtoPago: '2026-10-26',
+        lineas,
+      },
+      'clave-intento-1',
+      EMAIL,
+    );
+    expect(r).toMatchObject({ id: 'cmp1', estado: 'EMITIDO', numero: 1 });
+    expect(f.comprobantes.get('cmp1')).toMatchObject({
+      fechaVtoPago: '2026-10-26',
+      lineas,
+    });
+    // Cada POST con su clave derivada de la del intento; la emisión, con la del intento.
+    const claves = f.llamadas
+      .filter((l) => l.metodo === 'POST')
+      .map((l) => [l.ruta, l.opciones.idempotencyKey]);
+    expect(claves).toEqual([
+      ['/items', 'clave-intento-1-items'],
+      ['/comprobantes/borradores', 'clave-intento-1-borrador'],
+      ['/comprobantes/cmp1/emitir', 'clave-intento-1'],
+    ]);
+  });
+
+  it('facturar y emitir: si se corta y se reintenta con la misma clave, no crea otro comprobante ni emite dos veces', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    const datos = {
+      mes: '2026-09',
+      referencias: ['tracker:c1:p1:2026-09'],
+      observaciones: 'Gracias',
+    };
+    f.cortarAlEmitir(new Error('Se cortó la conexión'));
+    await expect(
+      s.facturarYEmitir(datos, 'clave-intento-2', EMAIL),
+    ).rejects.toThrow('Se cortó');
+    f.cortarAlEmitir(null);
+
+    const r = await s.facturarYEmitir(datos, 'clave-intento-2', EMAIL);
+    expect(r).toMatchObject({ id: 'cmp1', estado: 'EMITIDO' });
+    expect(f.comprobantes.size).toBe(1);
+    // El reintento ve el comprobante ya emitido y no lo vuelve a editar ni a emitir.
+    expect(f.llamadas.filter((l) => l.ruta.endsWith('/emitir'))).toHaveLength(
+      1,
+    );
+    expect(f.llamadas.filter((l) => l.metodo === 'PATCH')).toHaveLength(1);
+  });
+
+  it('facturar y emitir: líneas ya facturadas en otro comprobante no se emiten', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    const datos = { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] };
+    await s.facturarYEmitir(datos, 'clave-intento-3', EMAIL);
+    await expect(
+      s.facturarYEmitir(datos, 'clave-intento-4', EMAIL),
+    ).rejects.toThrow('ya están en otro comprobante');
+  });
+
+  it('factura manual: se crea y se emite en un paso', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const r = await servicio(f).crearYEmitir(
+      { clienteTrackerId: 'c1', lineas: [{ descripcion: 'x' }] },
+      'clave-manual-1',
+      EMAIL,
+    );
+    expect(r).toMatchObject({ id: 'manual1', estado: 'EMITIDO' });
+    expect(
+      f.llamadas.find((l) => l.ruta === '/comprobantes' && l.metodo === 'POST')!
+        .opciones.idempotencyKey,
+    ).toBe('clave-manual-1-borrador');
   });
 
   it('sin TC fijado y sin poder consultar el del día no factura (no usa 1 como cotización)', async () => {
