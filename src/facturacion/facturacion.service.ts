@@ -302,9 +302,16 @@ export class FacturacionService {
     return creado.id;
   }
 
+  /**
+   * Carga los ítems y arma los borradores. Con `clave`, los dos POST al Facturador usan claves
+   * derivadas: reintentar con la misma clave devuelve lo mismo y no duplica nada.
+   */
   async facturar(
     dto: { mes?: string; referencias?: unknown; fechaEmision?: unknown },
     email?: string,
+    clave?: string,
+    /** TC elegido solo para esta factura: queda en los ítems (el del mes no cambia). */
+    tipoCambioFactura?: number,
   ) {
     const mes = validarMes(dto.mes);
     const refs = Array.isArray(dto.referencias)
@@ -357,11 +364,16 @@ export class FacturacionService {
       items: ItemFacturador[];
     }>('POST', '/items', {
       email,
+      idempotencyKey: clave && `${clave}-items`,
       body: {
         descripcion: `Tracker - ${nombreMes(mes)}`,
         confirmar: true,
         items: elegidas.map((l) =>
-          this.item(l, idFacturador.get(l.clienteId)!),
+          this.item(
+            l,
+            idFacturador.get(l.clienteId)!,
+            tipoCambioFactura ?? r.cotizacion.valor,
+          ),
         ),
       },
     });
@@ -387,6 +399,7 @@ export class FacturacionService {
           '/comprobantes/borradores',
           {
             email,
+            idempotencyKey: clave && `${clave}-borrador`,
             body: {
               referencias: validos.map((i) => i.referenciaExterna),
               agrupacion: 'cliente',
@@ -404,7 +417,7 @@ export class FacturacionService {
     };
   }
 
-  private item(l: LineaResumen, clienteId: string) {
+  private item(l: LineaResumen, clienteId: string, tipoCambio: number) {
     return {
       referenciaExterna: l.referencia,
       cliente: { clienteId },
@@ -415,7 +428,19 @@ export class FacturacionService {
       moneda: l.moneda,
       alicuotaIva: '21',
       periodo: l.periodo,
-      metadatos: { proyectoId: l.proyecto.id, clienteTrackerId: l.clienteId },
+      metadatos: {
+        proyectoId: l.proyecto.id,
+        clienteTrackerId: l.clienteId,
+        // Con qué TC se pasó a pesos: queda en el ítem para mostrarlo en el borrador
+        // aunque después cambie el TC del mes.
+        ...(l.original
+          ? {
+              tipoCambio,
+              importeOriginal: l.original.importe,
+              monedaOriginal: l.original.moneda,
+            }
+          : {}),
+      },
     };
   }
 
@@ -496,7 +521,11 @@ export class FacturacionService {
    * Factura manual a un cliente del tracker: se resuelve su cliente del Facturador (asociándolo
    * o dándolo de alta, como al facturar el mes) y se crea el borrador con ese id.
    */
-  async crearBorrador(body: Record<string, unknown>, email?: string) {
+  async crearBorrador(
+    body: Record<string, unknown>,
+    email?: string,
+    clave?: string,
+  ) {
     const { clienteTrackerId, ...resto } = body ?? {};
     if (typeof clienteTrackerId !== 'string' || !clienteTrackerId) {
       throw new BadRequestException('Elegí el cliente.');
@@ -512,9 +541,129 @@ export class FacturacionService {
       );
     }
     const clienteId = await this.resolverCliente(c, estado, email);
-    return this.facturador.pedir('POST', '/comprobantes', {
+    return this.facturador.pedir<ComprobantePublico>('POST', '/comprobantes', {
       body: { ...resto, clienteId },
       email,
+      idempotencyKey: clave && `${clave}-borrador`,
     });
   }
+
+  // ── Facturar y emitir en un paso ─────────────────────────────────────────
+  // El usuario no ve borradores: arma la factura en un modal y la emite. Por dentro se
+  // crea el comprobante (el Facturador lo necesita para emitir sin duplicar) y se emite
+  // en el mismo pedido. Todo con claves derivadas de la del intento: si se corta y se
+  // reintenta, no se crea otro comprobante ni se emite dos veces.
+
+  /** Las líneas marcadas de un cliente del mes: se cargan, se arma el comprobante y se emite. */
+  async facturarYEmitir(dto: DatosEmitir, clave: string, email?: string) {
+    const tipoCambio =
+      dto.tipoCambio === undefined || dto.tipoCambio === null
+        ? undefined
+        : Number(dto.tipoCambio);
+    if (
+      tipoCambio !== undefined &&
+      !(Number.isFinite(tipoCambio) && tipoCambio > 0)
+    ) {
+      throw new BadRequestException('El tipo de cambio no es válido.');
+    }
+    // Con otro TC los precios en pesos cambian: el modal los manda ya recalculados en `lineas`.
+    const r = await this.facturar(
+      {
+        mes: dto.mes,
+        referencias: dto.referencias,
+        fechaEmision: dto.fechaEmision,
+      },
+      email,
+      clave,
+      tipoCambio,
+    );
+    if (r.errores.length) {
+      throw new UnprocessableEntityException(
+        r.errores.flatMap((e) => e.mensajes).join(' '),
+      );
+    }
+    if (r.comprobantes.length !== 1) {
+      throw new ConflictException(
+        r.comprobantes.length
+          ? 'Las líneas elegidas generaron más de un comprobante: revisalos en Comprobantes.'
+          : 'Esas líneas ya están en otro comprobante: revisalo en Comprobantes.',
+      );
+    }
+    return this.emitirCreado(
+      r.comprobantes[0] as ComprobantePublico,
+      ediciones(dto),
+      clave,
+      email,
+    );
+  }
+
+  /** Factura manual: se crea el comprobante con todos sus datos y se emite. */
+  async crearYEmitir(
+    body: Record<string, unknown>,
+    clave: string,
+    email?: string,
+  ) {
+    const creado = await this.crearBorrador(body, email, clave);
+    return this.emitirCreado(creado, {}, clave, email);
+  }
+
+  /**
+   * Aplica las ediciones del modal y emite. En un reintento el comprobante puede estar ya
+   * editado (no se vuelve a editar) o emitido (se devuelve como está).
+   */
+  private async emitirCreado(
+    creado: ComprobantePublico,
+    cambios: Record<string, unknown>,
+    clave: string,
+    email?: string,
+  ) {
+    const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
+    let actual = await this.facturador.pedir<ComprobantePublico>('GET', ruta, {
+      email,
+    });
+    if (!['BORRADOR', 'RECHAZADO'].includes(actual.estado)) return actual;
+    if (Object.keys(cambios).length && actual.version === creado.version) {
+      actual = await this.facturador.pedir<ComprobantePublico>('PATCH', ruta, {
+        email,
+        body: { ...cambios, version: actual.version },
+      });
+    }
+    return this.facturador.pedir<ComprobantePublico>('POST', `${ruta}/emitir`, {
+      email,
+      body: { version: actual.version },
+      idempotencyKey: clave,
+    });
+  }
+}
+
+export interface ComprobantePublico {
+  id: string;
+  estado: string;
+  version: number;
+}
+
+export interface DatosEmitir {
+  mes?: string;
+  referencias?: unknown;
+  fechaEmision?: unknown;
+  fechaVtoPago?: unknown;
+  observaciones?: unknown;
+  lineas?: unknown;
+  /** TC solo para esta factura (los precios en pesos llegan recalculados en `lineas`). */
+  tipoCambio?: unknown;
+}
+
+/** Lo que el usuario cambió en el modal (el Facturador valida cada campo). */
+function ediciones(dto: DatosEmitir): Record<string, unknown> {
+  return {
+    ...(typeof dto.fechaVtoPago === 'string' && dto.fechaVtoPago
+      ? { fechaVtoPago: dto.fechaVtoPago }
+      : {}),
+    ...(typeof dto.observaciones === 'string' && dto.observaciones.trim()
+      ? { observaciones: dto.observaciones.trim() }
+      : {}),
+    ...(Array.isArray(dto.lineas) && dto.lineas.length
+      ? { lineas: dto.lineas }
+      : {}),
+  };
 }
