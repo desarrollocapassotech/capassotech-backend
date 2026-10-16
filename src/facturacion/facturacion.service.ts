@@ -310,6 +310,8 @@ export class FacturacionService {
     dto: { mes?: string; referencias?: unknown; fechaEmision?: unknown },
     email?: string,
     clave?: string,
+    /** TC elegido solo para esta factura: queda en los ítems (el del mes no cambia). */
+    tipoCambioFactura?: number,
   ) {
     const mes = validarMes(dto.mes);
     const refs = Array.isArray(dto.referencias)
@@ -367,7 +369,11 @@ export class FacturacionService {
         descripcion: `Tracker - ${nombreMes(mes)}`,
         confirmar: true,
         items: elegidas.map((l) =>
-          this.item(l, idFacturador.get(l.clienteId)!, r.cotizacion.valor),
+          this.item(
+            l,
+            idFacturador.get(l.clienteId)!,
+            tipoCambioFactura ?? r.cotizacion.valor,
+          ),
         ),
       },
     });
@@ -550,6 +556,17 @@ export class FacturacionService {
 
   /** Las líneas marcadas de un cliente del mes: se cargan, se arma el comprobante y se emite. */
   async facturarYEmitir(dto: DatosEmitir, clave: string, email?: string) {
+    const tipoCambio =
+      dto.tipoCambio === undefined || dto.tipoCambio === null
+        ? undefined
+        : Number(dto.tipoCambio);
+    if (
+      tipoCambio !== undefined &&
+      !(Number.isFinite(tipoCambio) && tipoCambio > 0)
+    ) {
+      throw new BadRequestException('El tipo de cambio no es válido.');
+    }
+    // Con otro TC los precios en pesos cambian: el modal los manda ya recalculados en `lineas`.
     const r = await this.facturar(
       {
         mes: dto.mes,
@@ -558,6 +575,7 @@ export class FacturacionService {
       },
       email,
       clave,
+      tipoCambio,
     );
     if (r.errores.length) {
       throw new UnprocessableEntityException(
@@ -631,6 +649,8 @@ export interface DatosEmitir {
   fechaVtoPago?: unknown;
   observaciones?: unknown;
   lineas?: unknown;
+  /** TC solo para esta factura (los precios en pesos llegan recalculados en `lineas`). */
+  tipoCambio?: unknown;
 }
 
 /** Lo que el usuario cambió en el modal (el Facturador valida cada campo). */

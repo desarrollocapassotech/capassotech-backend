@@ -555,6 +555,50 @@ describe('FacturacionService', () => {
     ).rejects.toThrow('ya están en otro comprobante');
   });
 
+  it('facturar y emitir con un TC solo para esa factura: queda en los ítems y el del mes no cambia', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    const lineas = [
+      {
+        descripcion: 'Web',
+        cantidad: '7.5',
+        unidad: 'HORA',
+        precioUnitario: '48000',
+        alicuotaIva: '21',
+      },
+    ];
+    await s.facturarYEmitir(
+      {
+        mes: '2026-09',
+        referencias: ['tracker:c1:p1:2026-09'],
+        tipoCambio: 1200,
+        lineas,
+      },
+      'clave-tc-1',
+      EMAIL,
+    );
+    const carga = f.llamadas.find(
+      (l) => l.ruta === '/items' && l.metodo === 'POST',
+    )!;
+    expect((carga.opciones.body as any).items[0].metadatos).toMatchObject({
+      tipoCambio: 1200,
+    });
+    expect(f.comprobantes.get('cmp1')).toMatchObject({ lineas });
+    expect((await s.resumen('2026-09', EMAIL)).cotizacion.valor).toBe(1000);
+
+    await expect(
+      s.facturarYEmitir(
+        {
+          mes: '2026-09',
+          referencias: ['tracker:c1:p1:2026-09'],
+          tipoCambio: 0,
+        },
+        'clave-tc-2',
+        EMAIL,
+      ),
+    ).rejects.toThrow('tipo de cambio');
+  });
+
   it('factura manual: se crea y se emite en un paso', async () => {
     const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
     const r = await servicio(f).crearYEmitir(
