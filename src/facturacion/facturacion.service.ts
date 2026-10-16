@@ -361,7 +361,7 @@ export class FacturacionService {
         descripcion: `Tracker - ${nombreMes(mes)}`,
         confirmar: true,
         items: elegidas.map((l) =>
-          this.item(l, idFacturador.get(l.clienteId)!),
+          this.item(l, idFacturador.get(l.clienteId)!, r.cotizacion.valor),
         ),
       },
     });
@@ -404,7 +404,7 @@ export class FacturacionService {
     };
   }
 
-  private item(l: LineaResumen, clienteId: string) {
+  private item(l: LineaResumen, clienteId: string, tipoCambio: number) {
     return {
       referenciaExterna: l.referencia,
       cliente: { clienteId },
@@ -415,7 +415,19 @@ export class FacturacionService {
       moneda: l.moneda,
       alicuotaIva: '21',
       periodo: l.periodo,
-      metadatos: { proyectoId: l.proyecto.id, clienteTrackerId: l.clienteId },
+      metadatos: {
+        proyectoId: l.proyecto.id,
+        clienteTrackerId: l.clienteId,
+        // Con qué TC se pasó a pesos: queda en el ítem para mostrarlo en el borrador
+        // aunque después cambie el TC del mes.
+        ...(l.original
+          ? {
+              tipoCambio,
+              importeOriginal: l.original.importe,
+              monedaOriginal: l.original.moneda,
+            }
+          : {}),
+      },
     };
   }
 

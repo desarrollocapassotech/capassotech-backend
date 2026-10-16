@@ -295,6 +295,14 @@ describe('FacturacionService', () => {
         moneda: 'ARS',
       }),
     ]);
+    // La línea en dólares lleva el TC con que se pasó a pesos; la que ya era en pesos, no.
+    const [usd, ars] = (carga.opciones.body as any).items;
+    expect(usd.metadatos).toMatchObject({
+      tipoCambio: 1000,
+      importeOriginal: '300.00',
+      monedaOriginal: 'USD',
+    });
+    expect(ars.metadatos).not.toHaveProperty('tipoCambio');
     const borradores = f.llamadas.find(
       (l) => l.ruta === '/comprobantes/borradores',
     )!;
