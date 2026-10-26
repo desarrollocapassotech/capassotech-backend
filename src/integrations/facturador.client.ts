@@ -71,15 +71,20 @@ export class FacturadorClient {
     return cuerpo as T;
   }
 
-  /** Para el PDF: devuelve el binario y el nombre de archivo que propone el Facturador. */
+  /**
+   * Para el PDF: devuelve el binario y el nombre de archivo que propone el Facturador.
+   * Con `body` va por POST (por ejemplo, el recibo, que se arma con los datos que se mandan).
+   */
   async descargar(
     ruta: string,
     email?: string,
+    body?: unknown,
   ): Promise<{ buffer: Buffer; tipo: string; disposition: string | null }> {
-    const res = await this.enviar('GET', ruta, { email });
+    const metodo = body === undefined ? 'GET' : 'POST';
+    const res = await this.enviar(metodo, ruta, { email, body });
     if (!res.ok) {
       const cuerpo: unknown = await res.json().catch(() => null);
-      throw this.error(res.status, cuerpo, `GET ${ruta}`);
+      throw this.error(res.status, cuerpo, `${metodo} ${ruta}`);
     }
     return {
       buffer: Buffer.from(await res.arrayBuffer()),

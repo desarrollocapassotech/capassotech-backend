@@ -63,6 +63,7 @@ export interface ClienteTracker {
   ivaCondition: string | null;
   email: string | null;
   address: string | null;
+  billingDocument?: 'factura' | 'recibo' | null;
 }
 
 export interface ProyectoTracker {
@@ -90,6 +91,8 @@ export interface DatosCliente {
   condicionIva: string | null;
   email: string | null;
   domicilio: string | null;
+  /** Qué se le emite: factura en ARCA o recibo sin validez fiscal. */
+  documento: 'factura' | 'recibo';
 }
 
 export interface LineaResumen {
@@ -141,6 +144,7 @@ export function datosCliente(c: ClienteTracker): DatosCliente {
     condicionIva: condicionIvaDeTexto(c.ivaCondition),
     email: c.email?.trim() || null,
     domicilio: c.address?.trim() || null,
+    documento: c.billingDocument === 'recibo' ? 'recibo' : 'factura',
   };
 }
 

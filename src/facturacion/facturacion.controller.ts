@@ -28,6 +28,7 @@ import {
   FacturacionService,
   type AltaClienteDto,
   type DatosEmitir,
+  type DatosRecibo,
 } from './facturacion.service';
 
 type Usuario = AuthenticatedRequest['user'];
@@ -124,6 +125,30 @@ export class FacturacionController {
   @Get('clientes-tracker')
   clientesTracker(@CurrentUser() u: Usuario) {
     return this.facturacion.clientesTracker(u.email);
+  }
+
+  /** Factura en ARCA o recibo sin validez fiscal, por cliente del tracker. */
+  @Patch('clientes-tracker/:id/documento')
+  cambiarDocumento(
+    @Param('id') cliente: string,
+    @Body() body: { documento?: unknown },
+  ) {
+    return this.facturacion.cambiarDocumento(id(cliente), body?.documento);
+  }
+
+  /** Recibo sin validez fiscal (PDF): no se guarda ni se numera. */
+  @Post('recibo')
+  async recibo(
+    @CurrentUser() u: Usuario,
+    @Body() body: DatosRecibo,
+    @Res() res: Response,
+  ) {
+    const r = await this.facturacion.recibo(body ?? {}, u.email);
+    res.setHeader('Content-Type', r.tipo);
+    if (r.disposition) res.setHeader('Content-Disposition', r.disposition);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(r.buffer);
   }
 
   @Post('clientes')
