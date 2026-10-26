@@ -174,6 +174,18 @@ function facturadorFalso(
       pedir: jest.fn((m: string, r: string, o?: OpcionesFacturador) =>
         Promise.resolve().then(() => pedir(m, r, o)),
       ),
+      descargar: jest.fn((ruta: string, email?: string, body?: unknown) => {
+        llamadas.push({
+          metodo: body === undefined ? 'GET' : 'POST',
+          ruta,
+          opciones: { email, body },
+        });
+        return Promise.resolve({
+          buffer: Buffer.from('%PDF'),
+          tipo: 'application/pdf',
+          disposition: 'attachment; filename="Recibo.pdf"',
+        });
+      }),
     } as unknown as FacturadorClient,
   };
 }
@@ -260,6 +272,13 @@ function servicio(
     ),
     findOneBy: jest.fn(({ id }: { id: string }) =>
       Promise.resolve(clientesTracker.find((c) => c.id === id) ?? null),
+    ),
+    update: jest.fn(
+      ({ id }: { id: string }, cambios: Record<string, unknown>) => {
+        const c = clientesTracker.find((x) => x.id === id);
+        if (c) Object.assign(c, cambios);
+        return Promise.resolve({ affected: c ? 1 : 0 });
+      },
     ),
   } as unknown as Repository<ClientEntity>;
   const tipoDeCambio = {
@@ -611,6 +630,125 @@ describe('FacturacionService', () => {
       f.llamadas.find((l) => l.ruta === '/comprobantes' && l.metodo === 'POST')!
         .opciones.idempotencyKey,
     ).toBe('clave-manual-1-borrador');
+  });
+
+  describe('clientes con recibo (sin validez fiscal)', () => {
+    // El cliente sin CUIT (c3) pasa a recibo solo dentro de estos tests.
+    const sinCuit = clientesTracker.find((c) => c.id === 'c3') as Record<
+      string,
+      unknown
+    >;
+    afterEach(() => {
+      delete sinCuit.billingDocument;
+    });
+
+    it('cambiar el documento lo guarda en el cliente del tracker y valida el valor', async () => {
+      const s = servicio(facturadorFalso());
+      await expect(s.cambiarDocumento('c3', 'recibo')).resolves.toEqual({
+        clienteTrackerId: 'c3',
+        documento: 'recibo',
+      });
+      expect(sinCuit.billingDocument).toBe('recibo');
+      await expect(s.cambiarDocumento('c3', 'otro')).rejects.toThrow(
+        'documento',
+      );
+      await expect(s.cambiarDocumento('nadie', 'factura')).rejects.toThrow(
+        'no encontrado',
+      );
+    });
+
+    it('el resumen lo muestra como "recibo" (sin CUIT ni alta en el Facturador)', async () => {
+      sinCuit.billingDocument = 'recibo';
+      const r = await servicio(facturadorFalso()).resumen('2026-09', EMAIL);
+      expect(r.clientes.find((c) => c.id === 'c3')).toMatchObject({
+        alta: 'recibo',
+        facturador: null,
+        documento: 'recibo',
+      });
+    });
+
+    it('no se le puede facturar en ARCA', async () => {
+      sinCuit.billingDocument = 'recibo';
+      const s = servicio(facturadorFalso());
+      await expect(
+        s.facturarYEmitir(
+          { mes: '2026-09', referencias: ['tracker:c3:p3:2026-09'] },
+          'clave-r1',
+          EMAIL,
+        ),
+      ).rejects.toThrow('recibo, no factura');
+      await expect(
+        s.crearBorrador({ clienteTrackerId: 'c3', lineas: [] }, EMAIL),
+      ).rejects.toThrow('recibo, no factura');
+    });
+
+    it('el recibo lo genera el Facturador con las líneas del modal, sin numerar', async () => {
+      sinCuit.billingDocument = 'recibo';
+      const f = facturadorFalso();
+      const r = await servicio(f).recibo(
+        {
+          clienteTrackerId: 'c3',
+          fecha: '2026-10-26',
+          observaciones: ' Gracias ',
+          lineas: [
+            {
+              descripcion: 'App - Horas',
+              cantidad: '35.5',
+              unidad: 'HORA',
+              precioUnitario: '30800',
+            },
+            {
+              descripcion: 'Soporte',
+              cantidad: '1',
+              unidad: 'MES',
+              precioUnitario: '100000.555',
+            },
+          ],
+        },
+        EMAIL,
+      );
+      expect(r.tipo).toBe('application/pdf');
+      const pedido = f.llamadas.find((l) => l.ruta === '/recibos/pdf')!;
+      expect(pedido.opciones.body).toEqual({
+        tipo: 'COBRO',
+        fecha: '2026-10-26',
+        moneda: 'ARS',
+        contraparte: { nombre: 'Sin CUIT' },
+        items: [
+          {
+            descripcion: 'App - Horas',
+            cantidad: '35,5 h',
+            importe: '1093400.00',
+          },
+          { descripcion: 'Soporte', cantidad: '1 mes', importe: '100000.56' },
+        ],
+        total: '1193400.56',
+        observaciones: 'Gracias',
+      });
+    });
+
+    it('a un cliente de factura no se le hace recibo, y una línea incompleta se rechaza', async () => {
+      const s = servicio(facturadorFalso());
+      await expect(
+        s.recibo(
+          {
+            clienteTrackerId: 'c1',
+            lineas: [{ descripcion: 'x', cantidad: '1', precioUnitario: '1' }],
+          },
+          EMAIL,
+        ),
+      ).rejects.toThrow('se le emite factura');
+      sinCuit.billingDocument = 'recibo';
+      await expect(
+        s.recibo(
+          {
+            clienteTrackerId: 'c3',
+            lineas: [{ descripcion: '', cantidad: '1', precioUnitario: '1' }],
+          },
+          EMAIL,
+        ),
+      ).rejects.toThrow('descripción, cantidad y precio');
+    });
   });
 
   it('sin TC fijado y sin poder consultar el del día no factura (no usa 1 como cotización)', async () => {

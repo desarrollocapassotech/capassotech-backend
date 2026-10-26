@@ -59,7 +59,8 @@ export type EstadoAlta =
   | 'existente' // hay un cliente con ese CUIT: se asocia
   | 'automatica' // se da de alta con los datos del tracker
   | 'padron' // se da de alta tomando la condición de IVA del padrón de ARCA
-  | 'faltan-datos'; // sin CUIT válido: hay que darlo de alta a mano
+  | 'faltan-datos' // sin CUIT válido: hay que darlo de alta a mano
+  | 'recibo'; // se le emite recibo sin validez fiscal: no pasa por el Facturador
 
 export interface AltaClienteDto {
   clienteTrackerId: string;
@@ -148,7 +149,9 @@ export class FacturacionService {
       >('GET', '/clientes/referencias', { query: { referencia: lote }, email });
       for (const v of r) vinculados.set(v.referenciaExterna, v.cliente);
     }
-    const faltan = clientes.filter((c) => !vinculados.has(c.id));
+    const faltan = clientes.filter(
+      (c) => !vinculados.has(c.id) && c.documento !== 'recibo',
+    );
     const porCuit = new Map<string, ClienteFacturador>();
     if (faltan.some((c) => cuitValido(c.cuit))) {
       const todos = await this.facturador.pedir<ClienteFacturador[]>(
@@ -163,6 +166,8 @@ export class FacturacionService {
       { alta: EstadoAlta; facturador: ClienteFacturador | null }
     >(
       clientes.map((c) => {
+        if (c.documento === 'recibo')
+          return [c.id, { alta: 'recibo' as EstadoAlta, facturador: null }];
         const vinculado = vinculados.get(c.id);
         if (vinculado)
           return [
@@ -341,6 +346,12 @@ export class FacturacionService {
     const clientes = r.clientes.filter((c) =>
       elegidas.some((l) => l.clienteId === c.id),
     );
+    const conRecibo = clientes.filter((c) => c.documento === 'recibo');
+    if (conRecibo.length) {
+      throw new BadRequestException(
+        `A ${conRecibo.map((c) => c.razonSocial).join(', ')} se le emite recibo, no factura.`,
+      );
+    }
     const estados = await this.estadoClientes(clientes, email);
     const sinDatos = clientes.filter(
       (c) => estados.get(c.id)!.alta === 'faltan-datos',
@@ -534,6 +545,11 @@ export class FacturacionService {
     if (!entidad)
       throw new NotFoundException('Cliente del tracker no encontrado.');
     const c = datosCliente(entidad);
+    if (c.documento === 'recibo') {
+      throw new BadRequestException(
+        `A ${c.razonSocial} se le emite recibo, no factura.`,
+      );
+    }
     const estado = (await this.estadoClientes([c], email)).get(c.id)!;
     if (estado.alta === 'faltan-datos') {
       throw new UnprocessableEntityException(
@@ -545,6 +561,89 @@ export class FacturacionService {
       body: { ...resto, clienteId },
       email,
       idempotencyKey: clave && `${clave}-borrador`,
+    });
+  }
+
+  // ── Factura o recibo ─────────────────────────────────────────────────────
+
+  /** Qué se le emite al cliente al facturar: factura en ARCA o recibo sin validez fiscal. */
+  async cambiarDocumento(clienteTrackerId: string, documento: unknown) {
+    if (documento !== 'factura' && documento !== 'recibo') {
+      throw new BadRequestException('documento debe ser "factura" o "recibo".');
+    }
+    const r = await this.clients.update(
+      { id: clienteTrackerId },
+      { billingDocument: documento },
+    );
+    if (!r.affected)
+      throw new NotFoundException('Cliente del tracker no encontrado.');
+    return { clienteTrackerId, documento };
+  }
+
+  /**
+   * Recibo sin validez fiscal para un cliente marcado como "recibo": se arma con las líneas
+   * del modal y lo genera el Facturador (con sus datos y su logo). No se guarda ni se numera.
+   */
+  async recibo(dto: DatosRecibo, email?: string) {
+    if (typeof dto?.clienteTrackerId !== 'string' || !dto.clienteTrackerId) {
+      throw new BadRequestException('Elegí el cliente.');
+    }
+    const entidad = await this.clients.findOneBy({ id: dto.clienteTrackerId });
+    if (!entidad)
+      throw new NotFoundException('Cliente del tracker no encontrado.');
+    const c = datosCliente(entidad);
+    if (c.documento !== 'recibo') {
+      throw new BadRequestException(
+        `A ${c.razonSocial} se le emite factura: el recibo es para los clientes marcados como "Recibo".`,
+      );
+    }
+    const fecha =
+      typeof dto.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dto.fecha)
+        ? dto.fecha
+        : new Date().toISOString().slice(0, 10);
+    const lineas = Array.isArray(dto.lineas) ? dto.lineas : [];
+    const items = lineas.map((l) => {
+      const cantidad = Number(l?.cantidad);
+      const precio = Number(l?.precioUnitario);
+      if (
+        typeof l?.descripcion !== 'string' ||
+        !l.descripcion.trim() ||
+        !(cantidad > 0) ||
+        !(precio >= 0)
+      ) {
+        throw new BadRequestException(
+          'Cada línea necesita descripción, cantidad y precio.',
+        );
+      }
+      const centavos = Math.round(cantidad * precio * 100);
+      return {
+        descripcion: l.descripcion.trim(),
+        cantidad: textoCantidad(cantidad, l.unidad),
+        centavos,
+      };
+    });
+    if (!items.length)
+      throw new BadRequestException('El recibo necesita al menos una línea.');
+    const total = items.reduce((t, i) => t + i.centavos, 0);
+    const pesos = (centavos: number) => (centavos / 100).toFixed(2);
+    return this.facturador.descargar('/recibos/pdf', email, {
+      tipo: 'COBRO',
+      fecha,
+      moneda: 'ARS',
+      contraparte: {
+        nombre: c.razonSocial,
+        ...(c.cuit ? { documento: `CUIT ${formatearCuit(c.cuit)}` } : {}),
+        ...(c.domicilio ? { domicilio: c.domicilio } : {}),
+      },
+      items: items.map((i) => ({
+        descripcion: i.descripcion,
+        ...(i.cantidad ? { cantidad: i.cantidad } : {}),
+        importe: pesos(i.centavos),
+      })),
+      total: pesos(total),
+      ...(typeof dto.observaciones === 'string' && dto.observaciones.trim()
+        ? { observaciones: dto.observaciones.trim().slice(0, 1000) }
+        : {}),
     });
   }
 
@@ -640,6 +739,33 @@ export interface ComprobantePublico {
   id: string;
   estado: string;
   version: number;
+}
+
+export interface DatosRecibo {
+  clienteTrackerId?: unknown;
+  fecha?: unknown;
+  observaciones?: unknown;
+  lineas?: Array<{
+    descripcion?: unknown;
+    cantidad?: unknown;
+    unidad?: unknown;
+    precioUnitario?: unknown;
+  }>;
+}
+
+/** "68 h", "35,5 h", "1 mes": lo que va en la columna Cantidad del recibo. */
+function textoCantidad(cantidad: number, unidad: unknown): string {
+  const n = cantidad.toLocaleString('es-AR', { maximumFractionDigits: 2 });
+  if (unidad === 'HORA') return `${n} h`;
+  if (unidad === 'MES') return `${n} ${cantidad === 1 ? 'mes' : 'meses'}`;
+  return n;
+}
+
+function formatearCuit(cuit: string) {
+  const d = cuit.replace(/\D/g, '');
+  return d.length === 11
+    ? `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}`
+    : cuit;
 }
 
 export interface DatosEmitir {
