@@ -70,6 +70,9 @@ function facturadorFalso(
         }));
     }
     if (metodo === 'GET' && ruta === '/clientes') return clientes;
+    if (metodo === 'GET' && ruta === '/configuracion') {
+      return { puntosVenta: [{ id: 'pv1', numero: 1 }] };
+    }
     if (metodo === 'GET' && ruta.startsWith('/clientes/padron/')) {
       return {
         cuit: ruta.split('/').pop(),
@@ -119,6 +122,7 @@ function facturadorFalso(
     }
     if (metodo === 'POST' && ruta === '/comprobantes') {
       const c = {
+        ...body,
         id: 'manual1',
         clienteId: body.clienteId,
         estado: 'BORRADOR',
@@ -137,6 +141,15 @@ function facturadorFalso(
       }
       comprobantes.set(id, { id, estado: 'BORRADOR', version: 0 });
       return { comprobantes: [{ ...comprobantes.get(id) }] };
+    }
+    if (metodo === 'POST' && /^\/comprobantes\/[^/]+\/notas$/.test(ruta)) {
+      const nota = {
+        id: `nota${comprobantes.size}`,
+        estado: 'BORRADOR',
+        version: 0,
+      };
+      comprobantes.set(nota.id, nota);
+      return { ...nota };
     }
     const [, , idCmp, accion] = ruta.split('/');
     const cmp = ruta.startsWith('/comprobantes/')
@@ -630,6 +643,145 @@ describe('FacturacionService', () => {
       f.llamadas.find((l) => l.ruta === '/comprobantes' && l.metodo === 'POST')!
         .opciones.idempotencyKey,
     ).toBe('clave-manual-1-borrador');
+  });
+
+  it('guardar borrador: arma el comprobante con lo editado y no lo emite', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    const datos = {
+      mes: '2026-09',
+      referencias: ['tracker:c1:p1:2026-09'],
+      fechaVtoPago: '2026-10-26',
+    };
+    const r = await s.guardarBorrador(datos, 'clave-borr', EMAIL);
+    expect(r).toMatchObject({
+      id: 'cmp1',
+      estado: 'BORRADOR',
+      fechaVtoPago: '2026-10-26',
+    });
+    expect(f.llamadas.some((l) => l.ruta.endsWith('/emitir'))).toBe(false);
+    // Reintentar con la misma clave no crea otro ni vuelve a editar.
+    await s.guardarBorrador(datos, 'clave-borr', EMAIL);
+    expect(f.comprobantes.size).toBe(1);
+    expect(f.llamadas.filter((l) => l.metodo === 'PATCH')).toHaveLength(1);
+  });
+
+  it('anular: crea la nota de crédito y la emite en un paso; reintentar no crea otra', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    await s.facturarYEmitir(
+      { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] },
+      'clave-fac',
+      EMAIL,
+    );
+
+    await expect(s.anular('cmp1', '  ', 'clave-anular', EMAIL)).rejects.toThrow(
+      'motivo',
+    );
+    f.cortarAlEmitir(new Error('Se cortó'));
+    await expect(
+      s.anular('cmp1', 'Horas de más', 'clave-anular', EMAIL),
+    ).rejects.toThrow('Se cortó');
+    f.cortarAlEmitir(null);
+    const nota = await s.anular('cmp1', 'Horas de más', 'clave-anular', EMAIL);
+    expect(nota).toMatchObject({ id: 'nota1', estado: 'EMITIDO' });
+    const pedidos = f.llamadas.filter(
+      (l) => l.ruta === '/comprobantes/cmp1/notas',
+    );
+    expect(pedidos.map((l) => l.opciones.idempotencyKey)).toEqual([
+      'clave-anular-nota',
+      'clave-anular-nota',
+    ]);
+    expect(pedidos[0].opciones.body).toEqual({
+      clase: 'NOTA_CREDITO',
+      motivo: 'Horas de más',
+    });
+    expect(f.comprobantes.size).toBe(2); // la factura y una sola nota
+    expect(
+      f.llamadas.filter((l) => l.ruta === '/comprobantes/nota1/emitir'),
+    ).toHaveLength(1);
+  });
+
+  describe('conceptos fijos', () => {
+    const acme = clientesTracker.find((c) => c.id === 'c1') as Record<
+      string,
+      unknown
+    >;
+    afterEach(() => {
+      delete acme.billingConcepts;
+    });
+    const hosting = {
+      descripcion: 'Hosting',
+      cantidad: '1',
+      unidad: 'MES',
+      precioUnitario: '50000',
+    };
+
+    it('se guardan validados; una lista vacía los borra', async () => {
+      const s = servicio(facturadorFalso());
+      await expect(s.cambiarConceptos('c1', [hosting])).resolves.toMatchObject({
+        conceptos: [hosting],
+      });
+      expect(acme.billingConcepts).toEqual([hosting]);
+      await expect(
+        s.cambiarConceptos('c1', [{ ...hosting, cantidad: '0' }]),
+      ).rejects.toThrow('descripción, cantidad');
+      await expect(s.cambiarConceptos('c1', 'x')).rejects.toThrow('lista');
+      await s.cambiarConceptos('c1', []);
+      expect(acme.billingConcepts).toBeNull();
+    });
+
+    it('el resumen trae los conceptos de cada cliente', async () => {
+      acme.billingConcepts = [hosting];
+      const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+      const r = await servicio(f).resumen('2026-09', EMAIL);
+      expect(r.clientes.find((c) => c.id === 'c1')?.conceptos).toEqual([
+        hosting,
+      ]);
+    });
+
+    it('solo con conceptos (sin líneas del mes) el comprobante se arma a mano y se emite', async () => {
+      acme.billingConcepts = [hosting];
+      const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+      const lineas = [
+        {
+          descripcion: 'Hosting',
+          cantidad: '1',
+          unidad: 'MES',
+          precioUnitario: '50000',
+          alicuotaIva: '21',
+        },
+      ];
+      const r = await servicio(f).facturarYEmitir(
+        {
+          mes: '2026-10',
+          referencias: [],
+          clienteTrackerId: 'c1',
+          fechaEmision: '2026-11-02',
+          fechaVtoPago: '2026-11-12',
+          lineas,
+        },
+        'clave-conceptos',
+        EMAIL,
+      );
+      expect(r).toMatchObject({ id: 'manual1', estado: 'EMITIDO' });
+      const alta = f.llamadas.find(
+        (l) => l.ruta === '/comprobantes' && l.metodo === 'POST',
+      )!;
+      expect(alta.opciones.body).toMatchObject({
+        clienteId: 'fc-acme',
+        puntoVentaId: 'pv1',
+        concepto: 'SERVICIOS',
+        moneda: 'ARS',
+        fechaEmision: '2026-11-02',
+        fechaServicioDesde: '2026-10-01',
+        fechaServicioHasta: '2026-10-31',
+        fechaVtoPago: '2026-11-12',
+        lineas,
+      });
+      expect(alta.opciones.idempotencyKey).toBe('clave-conceptos-borrador');
+      expect(f.llamadas.some((l) => l.ruta === '/items')).toBe(false);
+    });
   });
 
   describe('clientes con recibo (sin validez fiscal)', () => {

@@ -204,6 +204,44 @@ describe('datosCliente', () => {
   });
 });
 
+describe('conceptos fijos', () => {
+  const hosting = {
+    descripcion: 'Hosting',
+    cantidad: '1',
+    unidad: 'MES',
+    precioUnitario: '50000',
+  };
+
+  it('un cliente sin horas ni abonos pero con conceptos aparece en el resumen', () => {
+    const r = armarResumen(
+      '2026-09',
+      [],
+      [proyecto()],
+      [
+        cliente(),
+        cliente({ id: 'c2', name: 'Beta', billingConcepts: [hosting] }),
+      ],
+      1000,
+    );
+    expect(r.clientes.map((c) => [c.id, c.conceptos])).toEqual([
+      ['c2', [hosting]],
+    ]);
+  });
+
+  it('se descartan los conceptos mal formados', () => {
+    const malos = [
+      { ...hosting, descripcion: ' ' },
+      { ...hosting, cantidad: '0' },
+      { ...hosting, unidad: 'OTRA' },
+      'x',
+      null,
+    ];
+    expect(
+      datosCliente(cliente({ billingConcepts: [hosting, ...malos] })).conceptos,
+    ).toEqual([hosting]);
+  });
+});
+
 describe('condicionIvaDeTexto y cuitValido', () => {
   it.each([
     ['Responsable Inscripto', 'RESPONSABLE_INSCRIPTO'],

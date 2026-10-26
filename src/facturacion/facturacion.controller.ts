@@ -96,6 +96,20 @@ export class FacturacionController {
     return this.facturacion.resumen(mes, u.email);
   }
 
+  /** Arma la factura con las líneas marcadas de un cliente y la deja como borrador (sin emitir). */
+  @Post('borrador')
+  guardarBorrador(
+    @CurrentUser() u: Usuario,
+    @Headers('idempotency-key') clave: string | undefined,
+    @Body() body: DatosEmitir,
+  ) {
+    return this.facturacion.guardarBorrador(
+      body ?? {},
+      claveIdempotencia(clave),
+      u.email,
+    );
+  }
+
   /** Factura las líneas marcadas de un cliente y la emite en ARCA en el mismo pedido. */
   @Post('emitir')
   @HttpCode(200)
@@ -125,6 +139,15 @@ export class FacturacionController {
   @Get('clientes-tracker')
   clientesTracker(@CurrentUser() u: Usuario) {
     return this.facturacion.clientesTracker(u.email);
+  }
+
+  /** Conceptos que se agregan solos a cada factura o recibo del cliente. */
+  @Patch('clientes-tracker/:id/conceptos')
+  cambiarConceptos(
+    @Param('id') cliente: string,
+    @Body() body: { conceptos?: unknown },
+  ) {
+    return this.facturacion.cambiarConceptos(id(cliente), body?.conceptos);
   }
 
   /** Factura en ARCA o recibo sin validez fiscal, por cliente del tracker. */
@@ -266,6 +289,23 @@ export class FacturacionController {
       email: u.email,
       idempotencyKey: claveIdempotencia(clave),
     });
+  }
+
+  /** Anula la factura: emite la nota de crédito por el total en un paso. */
+  @Post('comprobantes/:id/anular')
+  @HttpCode(200)
+  anular(
+    @CurrentUser() u: Usuario,
+    @Param('id') c: string,
+    @Headers('idempotency-key') clave: string | undefined,
+    @Body() body: { motivo?: unknown },
+  ) {
+    return this.facturacion.anular(
+      id(c),
+      body?.motivo,
+      claveIdempotencia(clave),
+      u.email,
+    );
   }
 
   @Post('comprobantes/:id/notas')
