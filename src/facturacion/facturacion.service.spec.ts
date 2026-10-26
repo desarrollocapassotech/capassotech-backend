@@ -2,7 +2,11 @@
    El Facturador falso trabaja con cuerpos JSON sin tipar. */
 import { HttpException, UnprocessableEntityException } from '@nestjs/common';
 import type { Repository } from 'typeorm';
-import type { ClientEntity, ProjectEntity } from '../database/entities';
+import type {
+  ClientEntity,
+  ClientReceiptEntity,
+  ProjectEntity,
+} from '../database/entities';
 import type { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import type { BillableHoursService } from '../integrations/billable-hours.service';
 import type {
@@ -297,14 +301,33 @@ function servicio(
   const tipoDeCambio = {
     getUsdRate: jest.fn().mockResolvedValue(cotizacion),
   } as unknown as ExchangeRateService;
+  const recibos = {
+    find: jest.fn(({ where }: { where: { year: number; month: number } }) =>
+      Promise.resolve(
+        recibosGuardados.filter(
+          (r) => r.year === where.year && r.month === where.month,
+        ),
+      ),
+    ),
+    insert: jest.fn((r: Record<string, unknown>) => {
+      recibosGuardados.push(r);
+      return Promise.resolve({});
+    }),
+  } as unknown as Repository<ClientReceiptEntity>;
   return new FacturacionService(
     projects,
     clients,
     horas,
     f.client,
     tipoDeCambio,
+    recibos,
   );
 }
+
+const recibosGuardados: Array<Record<string, unknown>> = [];
+beforeEach(() => {
+  recibosGuardados.length = 0;
+});
 
 const EMAIL = 'contable@capasso.tech';
 
@@ -887,6 +910,40 @@ describe('FacturacionService', () => {
         total: '1193400.56',
         observaciones: 'Gracias',
       });
+      // Sin mes en el pedido, queda registrado por el de la fecha.
+      expect(recibosGuardados).toEqual([
+        expect.objectContaining({
+          clientId: 'c3',
+          year: 2026,
+          month: 10,
+          date: '2026-10-26',
+          currency: 'USD',
+          total: '1193400.56',
+          createdBy: EMAIL,
+        }),
+      ]);
+    });
+
+    it('el resumen muestra los recibos hechos por el mes', async () => {
+      sinCuit.billingDocument = 'recibo';
+      const s = servicio(facturadorFalso());
+      await s.recibo(
+        {
+          clienteTrackerId: 'c3',
+          mes: '2026-09',
+          fecha: '2026-10-02',
+          moneda: 'ARS',
+          lineas: [
+            { descripcion: 'Soporte', cantidad: '1', precioUnitario: '1000' },
+          ],
+        },
+        EMAIL,
+      );
+      const r = await s.resumen('2026-09', EMAIL);
+      expect(r.clientes.find((c) => c.id === 'c3')?.recibos).toEqual([
+        { fecha: '2026-10-02', moneda: 'ARS', total: '1000.00' },
+      ]);
+      expect(r.clientes.find((c) => c.id === 'c1')?.recibos).toEqual([]);
     });
 
     it('a un cliente de factura no se le hace recibo, y una línea incompleta se rechaza', async () => {

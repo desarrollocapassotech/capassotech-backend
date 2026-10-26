@@ -2,6 +2,7 @@ import { AppUserEntity } from './app-user.entity';
 import { ClientFunctionalAnalystEntity } from './client-functional-analyst.entity';
 import { ClientHoursAlertEntity } from './client-hours-alert.entity';
 import { ClientPaymentEntity } from './client-payment.entity';
+import { ClientReceiptEntity } from './client-receipt.entity';
 import { ClientEntity } from './client.entity';
 import { CollaboratorEntity } from './collaborator.entity';
 import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entity';
@@ -24,6 +25,7 @@ export * from './app-user.entity';
 export * from './client-functional-analyst.entity';
 export * from './client-hours-alert.entity';
 export * from './client-payment.entity';
+export * from './client-receipt.entity';
 export * from './client.entity';
 export * from './collaborator.entity';
 export * from './collaborator-project-rate.entity';
@@ -54,6 +56,7 @@ export const entities = [
   ClientFunctionalAnalystEntity,
   ClientHoursAlertEntity,
   ClientPaymentEntity,
+  ClientReceiptEntity,
   TimeEntryEntity,
   ExpenseEntity,
   ExpenseProjectEntity,

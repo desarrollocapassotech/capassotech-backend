@@ -9,7 +9,11 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ClientEntity, ProjectEntity } from '../database/entities';
+import {
+  ClientEntity,
+  ClientReceiptEntity,
+  ProjectEntity,
+} from '../database/entities';
 import { BillingCurrency } from '../database/entities/enums';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { BillableHoursService } from '../integrations/billable-hours.service';
@@ -96,6 +100,8 @@ export class FacturacionService {
     private readonly horas: BillableHoursService,
     private readonly facturador: FacturadorClient,
     private readonly tipoDeCambio: ExchangeRateService,
+    @InjectRepository(ClientReceiptEntity)
+    private readonly recibos: Repository<ClientReceiptEntity>,
   ) {}
 
   // ── Resumen del mes ──────────────────────────────────────────────────────
@@ -213,12 +219,17 @@ export class FacturacionService {
   async resumen(mesRaw: string | undefined, email?: string) {
     const mes = validarMes(mesRaw);
     const r = await this.calcular(mes);
-    const [estados, items] = await Promise.all([
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    const [estados, items, recibos] = await Promise.all([
       this.estadoClientes(r.clientes, email),
       this.itemsPorReferencia(
         r.lineas.map((l) => l.referencia),
         email,
       ),
+      this.recibos.find({
+        where: { year: anio, month: numeroMes },
+        order: { createdAt: 'ASC' },
+      }),
     ]);
     return {
       mes,
@@ -230,6 +241,14 @@ export class FacturacionService {
         return {
           ...c,
           alta: estado.alta,
+          // Recibos ya hechos por el mes (no pasan por el Facturador: quedan registrados acá).
+          recibos: recibos
+            .filter((x) => x.clientId === c.id)
+            .map((x) => ({
+              fecha: x.date,
+              moneda: x.currency,
+              total: x.total,
+            })),
           facturador: estado.facturador
             ? {
                 id: estado.facturador.id,
@@ -666,11 +685,12 @@ export class FacturacionService {
       throw new BadRequestException('El recibo necesita al menos una línea.');
     const total = items.reduce((t, i) => t + i.centavos, 0);
     const pesos = (centavos: number) => (centavos / 100).toFixed(2);
-    return this.facturador.descargar('/recibos/pdf', email, {
+    const moneda =
+      dto.moneda === 'USD' || dto.moneda === 'ARS' ? dto.moneda : c.moneda;
+    const pdf = await this.facturador.descargar('/recibos/pdf', email, {
       tipo: 'COBRO',
       fecha,
-      moneda:
-        dto.moneda === 'USD' || dto.moneda === 'ARS' ? dto.moneda : c.moneda,
+      moneda,
       contraparte: {
         nombre: c.razonSocial,
         ...(c.cuit ? { documento: `CUIT ${formatearCuit(c.cuit)}` } : {}),
@@ -686,6 +706,22 @@ export class FacturacionService {
         ? { observaciones: dto.observaciones.trim().slice(0, 1000) }
         : {}),
     });
+    // Se registra por el mes de las horas (o el de la fecha del recibo) para mostrarlo como hecho.
+    const mes =
+      typeof dto.mes === 'string' && MES.test(dto.mes)
+        ? dto.mes
+        : fecha.slice(0, 7);
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    await this.recibos.insert({
+      clientId: entidad.id,
+      year: anio,
+      month: numeroMes,
+      date: fecha,
+      currency: moneda,
+      total: pesos(total),
+      createdBy: email ?? null,
+    });
+    return pdf;
   }
 
   // ── Facturar y emitir en un paso ─────────────────────────────────────────
@@ -884,6 +920,8 @@ export interface ComprobantePublico {
 
 export interface DatosRecibo {
   clienteTrackerId?: unknown;
+  /** Mes de las horas (yyyy-MM): el recibo queda registrado como hecho para ese mes. */
+  mes?: unknown;
   /** USD o ARS (los precios de las líneas vienen en esa moneda). Sin valor: la del cliente. */
   moneda?: unknown;
   fecha?: unknown;
