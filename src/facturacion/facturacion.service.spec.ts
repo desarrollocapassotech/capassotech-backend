@@ -640,6 +640,7 @@ describe('FacturacionService', () => {
     >;
     afterEach(() => {
       delete sinCuit.billingDocument;
+      delete sinCuit.billingCurrency;
     });
 
     it('cambiar el documento lo guarda en el cliente del tracker y valida el valor', async () => {
@@ -649,6 +650,14 @@ describe('FacturacionService', () => {
         documento: 'recibo',
       });
       expect(sinCuit.billingDocument).toBe('recibo');
+      // Con moneda, también cambia la moneda de facturación (la del recibo por defecto).
+      await expect(
+        s.cambiarDocumento('c3', 'recibo', 'ARS'),
+      ).resolves.toMatchObject({ moneda: 'ARS' });
+      expect(sinCuit.billingCurrency).toBe('ARS');
+      await expect(s.cambiarDocumento('c3', 'recibo', 'EUR')).rejects.toThrow(
+        'moneda',
+      );
       await expect(s.cambiarDocumento('c3', 'otro')).rejects.toThrow(
         'documento',
       );
@@ -664,6 +673,7 @@ describe('FacturacionService', () => {
         alta: 'recibo',
         facturador: null,
         documento: 'recibo',
+        moneda: 'USD',
       });
     });
 
@@ -712,7 +722,7 @@ describe('FacturacionService', () => {
       expect(pedido.opciones.body).toEqual({
         tipo: 'COBRO',
         fecha: '2026-10-26',
-        moneda: 'ARS',
+        moneda: 'USD', // sin moneda en el pedido: la de facturación del cliente
         contraparte: { nombre: 'Sin CUIT' },
         items: [
           {

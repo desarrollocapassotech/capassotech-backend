@@ -63,7 +63,10 @@ export interface ClienteTracker {
   ivaCondition: string | null;
   email: string | null;
   address: string | null;
+  city?: string | null;
+  province?: string | null;
   billingDocument?: 'factura' | 'recibo' | null;
+  billingCurrency?: string | null;
 }
 
 export interface ProyectoTracker {
@@ -93,6 +96,8 @@ export interface DatosCliente {
   domicilio: string | null;
   /** Qué se le emite: factura en ARCA o recibo sin validez fiscal. */
   documento: 'factura' | 'recibo';
+  /** Moneda de facturación del cliente en el tracker: la del recibo por defecto. */
+  moneda: 'USD' | 'ARS';
 }
 
 export interface LineaResumen {
@@ -131,6 +136,16 @@ const mediaHoraArriba = (n: number) =>
 /** "12.50" → "12.5", "1.00" → "1". */
 const limpio = (s: string) => String(Number(s));
 
+/** "Tucuman 1031, Rosario, Santa Fe": calle, ciudad y provincia (sin los "-" de relleno del tracker). */
+export function domicilioCompleto(
+  c: Pick<ClienteTracker, 'address' | 'city' | 'province'>,
+): string | null {
+  const partes = [c.address, c.city, c.province]
+    .map((p) => p?.trim() ?? '')
+    .filter((p) => /[A-Za-z0-9]/.test(p));
+  return partes.length ? partes.join(', ') : null;
+}
+
 export function datosCliente(c: ClienteTracker): DatosCliente {
   const cuit = c.cuit?.replace(/\D/g, '') || null;
   return {
@@ -143,8 +158,9 @@ export function datosCliente(c: ClienteTracker): DatosCliente {
     cuit,
     condicionIva: condicionIvaDeTexto(c.ivaCondition),
     email: c.email?.trim() || null,
-    domicilio: c.address?.trim() || null,
+    domicilio: domicilioCompleto(c),
     documento: c.billingDocument === 'recibo' ? 'recibo' : 'factura',
+    moneda: c.billingCurrency === 'ARS' ? 'ARS' : 'USD',
   };
 }
 

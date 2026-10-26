@@ -131,9 +131,13 @@ export class FacturacionController {
   @Patch('clientes-tracker/:id/documento')
   cambiarDocumento(
     @Param('id') cliente: string,
-    @Body() body: { documento?: unknown },
+    @Body() body: { documento?: unknown; moneda?: unknown },
   ) {
-    return this.facturacion.cambiarDocumento(id(cliente), body?.documento);
+    return this.facturacion.cambiarDocumento(
+      id(cliente),
+      body?.documento,
+      body?.moneda,
+    );
   }
 
   /** Recibo sin validez fiscal (PDF): no se guarda ni se numera. */

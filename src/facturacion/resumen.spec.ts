@@ -181,6 +181,27 @@ describe('datosCliente', () => {
       condicionIva: 'MONOTRIBUTO',
     });
   });
+
+  it('el domicilio va completo (calle, ciudad, provincia) y sin los "-" de relleno', () => {
+    expect(
+      datosCliente(
+        cliente({
+          address: 'Tucuman 1031',
+          city: 'Rosario',
+          province: 'Santa Fe',
+        }),
+      ).domicilio,
+    ).toBe('Tucuman 1031, Rosario, Santa Fe');
+    expect(
+      datosCliente(
+        cliente({ address: 'Tucuman 1031', city: '-', province: ' ' }),
+      ).domicilio,
+    ).toBe('Tucuman 1031');
+    expect(
+      datosCliente(cliente({ address: '-', city: '-', province: '-' }))
+        .domicilio,
+    ).toBeNull();
+  });
 });
 
 describe('condicionIvaDeTexto y cuitValido', () => {

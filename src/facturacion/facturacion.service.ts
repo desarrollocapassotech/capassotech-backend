@@ -10,6 +10,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ClientEntity, ProjectEntity } from '../database/entities';
+import { BillingCurrency } from '../database/entities/enums';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { BillableHoursService } from '../integrations/billable-hours.service';
 import { FacturadorClient } from '../integrations/facturador.client';
@@ -566,18 +567,31 @@ export class FacturacionService {
 
   // ── Factura o recibo ─────────────────────────────────────────────────────
 
-  /** Qué se le emite al cliente al facturar: factura en ARCA o recibo sin validez fiscal. */
-  async cambiarDocumento(clienteTrackerId: string, documento: unknown) {
+  /**
+   * Qué se le emite al cliente al facturar: factura en ARCA o recibo sin validez fiscal.
+   * Con `moneda` también se cambia su moneda de facturación (la del recibo por defecto).
+   */
+  async cambiarDocumento(
+    clienteTrackerId: string,
+    documento: unknown,
+    moneda?: unknown,
+  ) {
     if (documento !== 'factura' && documento !== 'recibo') {
       throw new BadRequestException('documento debe ser "factura" o "recibo".');
     }
+    if (moneda !== undefined && moneda !== 'USD' && moneda !== 'ARS') {
+      throw new BadRequestException('moneda debe ser "USD" o "ARS".');
+    }
     const r = await this.clients.update(
       { id: clienteTrackerId },
-      { billingDocument: documento },
+      {
+        billingDocument: documento,
+        ...(moneda ? { billingCurrency: moneda as BillingCurrency } : {}),
+      },
     );
     if (!r.affected)
       throw new NotFoundException('Cliente del tracker no encontrado.');
-    return { clienteTrackerId, documento };
+    return { clienteTrackerId, documento, ...(moneda ? { moneda } : {}) };
   }
 
   /**
@@ -629,7 +643,8 @@ export class FacturacionService {
     return this.facturador.descargar('/recibos/pdf', email, {
       tipo: 'COBRO',
       fecha,
-      moneda: 'ARS',
+      moneda:
+        dto.moneda === 'USD' || dto.moneda === 'ARS' ? dto.moneda : c.moneda,
       contraparte: {
         nombre: c.razonSocial,
         ...(c.cuit ? { documento: `CUIT ${formatearCuit(c.cuit)}` } : {}),
@@ -743,6 +758,8 @@ export interface ComprobantePublico {
 
 export interface DatosRecibo {
   clienteTrackerId?: unknown;
+  /** USD o ARS (los precios de las líneas vienen en esa moneda). Sin valor: la del cliente. */
+  moneda?: unknown;
   fecha?: unknown;
   observaciones?: unknown;
   lineas?: Array<{
