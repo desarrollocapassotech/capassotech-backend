@@ -112,6 +112,15 @@ export class ClientEntity {
   @Column({ name: 'billing_document', type: 'text', nullable: true })
   billingDocument: 'factura' | 'recibo' | null;
 
+  // Conceptos que se agregan solos a cada factura o recibo (en la moneda del documento del cliente).
+  @Column({ name: 'billing_concepts', type: 'jsonb', nullable: true })
+  billingConcepts: Array<{
+    descripcion: string;
+    cantidad: string;
+    unidad: string;
+    precioUnitario: string;
+  }> | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

@@ -9,12 +9,18 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ClientEntity, ProjectEntity } from '../database/entities';
+import {
+  ClientEntity,
+  ClientReceiptEntity,
+  ProjectEntity,
+} from '../database/entities';
+import { BillingCurrency } from '../database/entities/enums';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { BillableHoursService } from '../integrations/billable-hours.service';
 import { FacturadorClient } from '../integrations/facturador.client';
 import {
   armarResumen,
+  conceptosValidos,
   cuitValido,
   datosCliente,
   MES,
@@ -94,6 +100,8 @@ export class FacturacionService {
     private readonly horas: BillableHoursService,
     private readonly facturador: FacturadorClient,
     private readonly tipoDeCambio: ExchangeRateService,
+    @InjectRepository(ClientReceiptEntity)
+    private readonly recibos: Repository<ClientReceiptEntity>,
   ) {}
 
   // ── Resumen del mes ──────────────────────────────────────────────────────
@@ -211,12 +219,17 @@ export class FacturacionService {
   async resumen(mesRaw: string | undefined, email?: string) {
     const mes = validarMes(mesRaw);
     const r = await this.calcular(mes);
-    const [estados, items] = await Promise.all([
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    const [estados, items, recibos] = await Promise.all([
       this.estadoClientes(r.clientes, email),
       this.itemsPorReferencia(
         r.lineas.map((l) => l.referencia),
         email,
       ),
+      this.recibos.find({
+        where: { year: anio, month: numeroMes },
+        order: { createdAt: 'ASC' },
+      }),
     ]);
     return {
       mes,
@@ -228,6 +241,14 @@ export class FacturacionService {
         return {
           ...c,
           alta: estado.alta,
+          // Recibos ya hechos por el mes (no pasan por el Facturador: quedan registrados acá).
+          recibos: recibos
+            .filter((x) => x.clientId === c.id)
+            .map((x) => ({
+              fecha: x.date,
+              moneda: x.currency,
+              total: x.total,
+            })),
           facturador: estado.facturador
             ? {
                 id: estado.facturador.id,
@@ -564,20 +585,58 @@ export class FacturacionService {
     });
   }
 
-  // ── Factura o recibo ─────────────────────────────────────────────────────
+  // ── Conceptos fijos ──────────────────────────────────────────────────────
 
-  /** Qué se le emite al cliente al facturar: factura en ARCA o recibo sin validez fiscal. */
-  async cambiarDocumento(clienteTrackerId: string, documento: unknown) {
-    if (documento !== 'factura' && documento !== 'recibo') {
-      throw new BadRequestException('documento debe ser "factura" o "recibo".');
+  /** Conceptos que se agregan solos a cada factura o recibo del cliente (lista vacía = ninguno). */
+  async cambiarConceptos(clienteTrackerId: string, conceptos: unknown) {
+    if (!Array.isArray(conceptos)) {
+      throw new BadRequestException('conceptos debe ser una lista.');
+    }
+    if (conceptos.length > 50) {
+      throw new BadRequestException('Como mucho 50 conceptos.');
+    }
+    const validos = conceptosValidos(conceptos);
+    if (validos.length !== conceptos.length) {
+      throw new BadRequestException(
+        'Cada concepto necesita descripción, cantidad mayor a cero, unidad y precio.',
+      );
     }
     const r = await this.clients.update(
       { id: clienteTrackerId },
-      { billingDocument: documento },
+      { billingConcepts: validos.length ? validos : null },
     );
     if (!r.affected)
       throw new NotFoundException('Cliente del tracker no encontrado.');
-    return { clienteTrackerId, documento };
+    return { clienteTrackerId, conceptos: validos };
+  }
+
+  // ── Factura o recibo ─────────────────────────────────────────────────────
+
+  /**
+   * Qué se le emite al cliente al facturar: factura en ARCA o recibo sin validez fiscal.
+   * Con `moneda` también se cambia su moneda de facturación (la del recibo por defecto).
+   */
+  async cambiarDocumento(
+    clienteTrackerId: string,
+    documento: unknown,
+    moneda?: unknown,
+  ) {
+    if (documento !== 'factura' && documento !== 'recibo') {
+      throw new BadRequestException('documento debe ser "factura" o "recibo".');
+    }
+    if (moneda !== undefined && moneda !== 'USD' && moneda !== 'ARS') {
+      throw new BadRequestException('moneda debe ser "USD" o "ARS".');
+    }
+    const r = await this.clients.update(
+      { id: clienteTrackerId },
+      {
+        billingDocument: documento,
+        ...(moneda ? { billingCurrency: moneda as BillingCurrency } : {}),
+      },
+    );
+    if (!r.affected)
+      throw new NotFoundException('Cliente del tracker no encontrado.');
+    return { clienteTrackerId, documento, ...(moneda ? { moneda } : {}) };
   }
 
   /**
@@ -626,10 +685,12 @@ export class FacturacionService {
       throw new BadRequestException('El recibo necesita al menos una línea.');
     const total = items.reduce((t, i) => t + i.centavos, 0);
     const pesos = (centavos: number) => (centavos / 100).toFixed(2);
-    return this.facturador.descargar('/recibos/pdf', email, {
+    const moneda =
+      dto.moneda === 'USD' || dto.moneda === 'ARS' ? dto.moneda : c.moneda;
+    const pdf = await this.facturador.descargar('/recibos/pdf', email, {
       tipo: 'COBRO',
       fecha,
-      moneda: 'ARS',
+      moneda,
       contraparte: {
         nombre: c.razonSocial,
         ...(c.cuit ? { documento: `CUIT ${formatearCuit(c.cuit)}` } : {}),
@@ -645,6 +706,22 @@ export class FacturacionService {
         ? { observaciones: dto.observaciones.trim().slice(0, 1000) }
         : {}),
     });
+    // Se registra por el mes de las horas (o el de la fecha del recibo) para mostrarlo como hecho.
+    const mes =
+      typeof dto.mes === 'string' && MES.test(dto.mes)
+        ? dto.mes
+        : fecha.slice(0, 7);
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    await this.recibos.insert({
+      clientId: entidad.id,
+      year: anio,
+      month: numeroMes,
+      date: fecha,
+      currency: moneda,
+      total: pesos(total),
+      createdBy: email ?? null,
+    });
+    return pdf;
   }
 
   // ── Facturar y emitir en un paso ─────────────────────────────────────────
@@ -655,6 +732,23 @@ export class FacturacionService {
 
   /** Las líneas marcadas de un cliente del mes: se cargan, se arma el comprobante y se emite. */
   async facturarYEmitir(dto: DatosEmitir, clave: string, email?: string) {
+    const { creado, cambios } = await this.armarDelMes(dto, clave, email);
+    return this.emitirCreado(creado, cambios, clave, email);
+  }
+
+  /** Igual que facturar y emitir, pero queda como borrador (con lo editado en el modal) para emitirlo después. */
+  async guardarBorrador(dto: DatosEmitir, clave: string, email?: string) {
+    const { creado, cambios } = await this.armarDelMes(dto, clave, email);
+    return this.aplicarCambios(creado, cambios, email);
+  }
+
+  /** Carga las líneas marcadas de un cliente y arma su comprobante (sin emitirlo). */
+  private async armarDelMes(dto: DatosEmitir, clave: string, email?: string) {
+    const sinLineasDelMes =
+      !Array.isArray(dto.referencias) || dto.referencias.length === 0;
+    if (sinLineasDelMes && typeof dto.clienteTrackerId === 'string') {
+      return this.armarSoloConceptos(dto, clave, email);
+    }
     const tipoCambio =
       dto.tipoCambio === undefined || dto.tipoCambio === null
         ? undefined
@@ -688,12 +782,35 @@ export class FacturacionService {
           : 'Esas líneas ya están en otro comprobante: revisalo en Comprobantes.',
       );
     }
-    return this.emitirCreado(
-      r.comprobantes[0] as ComprobantePublico,
-      ediciones(dto),
-      clave,
-      email,
+    return {
+      creado: r.comprobantes[0] as ComprobantePublico,
+      cambios: ediciones(dto),
+    };
+  }
+
+  /**
+   * Anular una factura emitida: se crea la nota de crédito por el total y se emite en el mismo
+   * pedido (sin borrador de por medio). Con la misma clave, reintentar no crea otra nota.
+   */
+  async anular(
+    facturaId: string,
+    motivo: unknown,
+    clave: string,
+    email?: string,
+  ) {
+    if (typeof motivo !== 'string' || !motivo.trim()) {
+      throw new BadRequestException('Poné el motivo de la anulación.');
+    }
+    const nota = await this.facturador.pedir<ComprobantePublico>(
+      'POST',
+      `/comprobantes/${encodeURIComponent(facturaId)}/notas`,
+      {
+        email,
+        body: { clase: 'NOTA_CREDITO', motivo: motivo.trim().slice(0, 500) },
+        idempotencyKey: `${clave}-nota`,
+      },
     );
+    return this.emitirCreado(nota, {}, clave, email);
   }
 
   /** Factura manual: se crea el comprobante con todos sus datos y se emite. */
@@ -707,6 +824,74 @@ export class FacturacionService {
   }
 
   /**
+   * Cliente sin horas ni abonos en el mes, solo con conceptos fijos: el comprobante se arma con
+   * las líneas del modal (período = el mes) en el primer punto de venta del ambiente actual.
+   */
+  private async armarSoloConceptos(
+    dto: DatosEmitir,
+    clave: string,
+    email?: string,
+  ) {
+    const mes = validarMes(dto.mes);
+    if (!Array.isArray(dto.lineas) || !dto.lineas.length) {
+      throw new BadRequestException('Elegí qué facturar.');
+    }
+    const config = await this.facturador.pedir<{
+      puntosVenta?: Array<{ id: string }>;
+    }>('GET', '/configuracion', { email });
+    const puntoVentaId = config.puntosVenta?.[0]?.id;
+    if (!puntoVentaId) {
+      throw new UnprocessableEntityException(
+        'No hay puntos de venta activos en el Facturador.',
+      );
+    }
+    const { desde, hasta } = rangoMes(mes);
+    const creado = await this.crearBorrador(
+      {
+        clienteTrackerId: dto.clienteTrackerId,
+        puntoVentaId,
+        concepto: 'SERVICIOS',
+        moneda: 'ARS',
+        fechaServicioDesde: desde,
+        fechaServicioHasta: hasta,
+        ...(typeof dto.fechaEmision === 'string' && dto.fechaEmision
+          ? { fechaEmision: dto.fechaEmision }
+          : {}),
+        ...ediciones(dto),
+      },
+      email,
+      clave,
+    );
+    return { creado, cambios: {} };
+  }
+
+  /**
+   * Aplica las ediciones del modal al comprobante recién creado. En un reintento puede estar ya
+   * editado (no se vuelve a editar) o emitido (se devuelve como está).
+   */
+  private async aplicarCambios(
+    creado: ComprobantePublico,
+    cambios: Record<string, unknown>,
+    email?: string,
+  ) {
+    const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
+    const actual = await this.facturador.pedir<ComprobantePublico>(
+      'GET',
+      ruta,
+      {
+        email,
+      },
+    );
+    if (!['BORRADOR', 'RECHAZADO'].includes(actual.estado)) return actual;
+    if (!Object.keys(cambios).length || actual.version !== creado.version)
+      return actual;
+    return this.facturador.pedir<ComprobantePublico>('PATCH', ruta, {
+      email,
+      body: { ...cambios, version: actual.version },
+    });
+  }
+
+  /**
    * Aplica las ediciones del modal y emite. En un reintento el comprobante puede estar ya
    * editado (no se vuelve a editar) o emitido (se devuelve como está).
    */
@@ -716,17 +901,9 @@ export class FacturacionService {
     clave: string,
     email?: string,
   ) {
-    const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
-    let actual = await this.facturador.pedir<ComprobantePublico>('GET', ruta, {
-      email,
-    });
+    const actual = await this.aplicarCambios(creado, cambios, email);
     if (!['BORRADOR', 'RECHAZADO'].includes(actual.estado)) return actual;
-    if (Object.keys(cambios).length && actual.version === creado.version) {
-      actual = await this.facturador.pedir<ComprobantePublico>('PATCH', ruta, {
-        email,
-        body: { ...cambios, version: actual.version },
-      });
-    }
+    const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
     return this.facturador.pedir<ComprobantePublico>('POST', `${ruta}/emitir`, {
       email,
       body: { version: actual.version },
@@ -743,6 +920,10 @@ export interface ComprobantePublico {
 
 export interface DatosRecibo {
   clienteTrackerId?: unknown;
+  /** Mes de las horas (yyyy-MM): el recibo queda registrado como hecho para ese mes. */
+  mes?: unknown;
+  /** USD o ARS (los precios de las líneas vienen en esa moneda). Sin valor: la del cliente. */
+  moneda?: unknown;
   fecha?: unknown;
   observaciones?: unknown;
   lineas?: Array<{
@@ -770,6 +951,8 @@ function formatearCuit(cuit: string) {
 
 export interface DatosEmitir {
   mes?: string;
+  /** Solo hace falta sin líneas del mes (cliente con conceptos fijos nada más). */
+  clienteTrackerId?: unknown;
   referencias?: unknown;
   fechaEmision?: unknown;
   fechaVtoPago?: unknown;

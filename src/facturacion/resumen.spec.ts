@@ -181,6 +181,65 @@ describe('datosCliente', () => {
       condicionIva: 'MONOTRIBUTO',
     });
   });
+
+  it('el domicilio va completo (calle, ciudad, provincia) y sin los "-" de relleno', () => {
+    expect(
+      datosCliente(
+        cliente({
+          address: 'Tucuman 1031',
+          city: 'Rosario',
+          province: 'Santa Fe',
+        }),
+      ).domicilio,
+    ).toBe('Tucuman 1031, Rosario, Santa Fe');
+    expect(
+      datosCliente(
+        cliente({ address: 'Tucuman 1031', city: '-', province: ' ' }),
+      ).domicilio,
+    ).toBe('Tucuman 1031');
+    expect(
+      datosCliente(cliente({ address: '-', city: '-', province: '-' }))
+        .domicilio,
+    ).toBeNull();
+  });
+});
+
+describe('conceptos fijos', () => {
+  const hosting = {
+    descripcion: 'Hosting',
+    cantidad: '1',
+    unidad: 'MES',
+    precioUnitario: '50000',
+  };
+
+  it('un cliente sin horas ni abonos pero con conceptos aparece en el resumen', () => {
+    const r = armarResumen(
+      '2026-09',
+      [],
+      [proyecto()],
+      [
+        cliente(),
+        cliente({ id: 'c2', name: 'Beta', billingConcepts: [hosting] }),
+      ],
+      1000,
+    );
+    expect(r.clientes.map((c) => [c.id, c.conceptos])).toEqual([
+      ['c2', [hosting]],
+    ]);
+  });
+
+  it('se descartan los conceptos mal formados', () => {
+    const malos = [
+      { ...hosting, descripcion: ' ' },
+      { ...hosting, cantidad: '0' },
+      { ...hosting, unidad: 'OTRA' },
+      'x',
+      null,
+    ];
+    expect(
+      datosCliente(cliente({ billingConcepts: [hosting, ...malos] })).conceptos,
+    ).toEqual([hosting]);
+  });
 });
 
 describe('condicionIvaDeTexto y cuitValido', () => {

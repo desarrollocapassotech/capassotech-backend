@@ -63,7 +63,50 @@ export interface ClienteTracker {
   ivaCondition: string | null;
   email: string | null;
   address: string | null;
+  city?: string | null;
+  province?: string | null;
   billingDocument?: 'factura' | 'recibo' | null;
+  billingCurrency?: string | null;
+  billingConcepts?: unknown;
+}
+
+export const UNIDADES_CONCEPTO = ['HORA', 'UNIDAD', 'SERVICIO', 'MES'] as const;
+
+/** Concepto fijo del cliente: se agrega solo a cada factura o recibo. */
+export interface ConceptoFijo {
+  descripcion: string;
+  /** Decimal con punto ("1", "2.5"). */
+  cantidad: string;
+  unidad: (typeof UNIDADES_CONCEPTO)[number];
+  /** En la moneda del documento del cliente (pesos si se le factura; la del recibo si es recibo). */
+  precioUnitario: string;
+}
+
+/** Los conceptos guardados, sin los que estén mal formados (la columna es JSON libre). */
+export function conceptosValidos(valor: unknown): ConceptoFijo[] {
+  if (!Array.isArray(valor)) return [];
+  return valor.flatMap((c: Record<string, unknown> | null) => {
+    const cantidad = Number(c?.cantidad);
+    const precio = Number(c?.precioUnitario);
+    const unidad = c?.unidad;
+    if (
+      typeof c?.descripcion !== 'string' ||
+      !c.descripcion.trim() ||
+      !(cantidad > 0) ||
+      !(precio >= 0) ||
+      !UNIDADES_CONCEPTO.includes(unidad as ConceptoFijo['unidad'])
+    ) {
+      return [];
+    }
+    return [
+      {
+        descripcion: c.descripcion.trim().slice(0, 500),
+        cantidad: String(cantidad),
+        unidad: unidad as ConceptoFijo['unidad'],
+        precioUnitario: String(precio),
+      },
+    ];
+  });
 }
 
 export interface ProyectoTracker {
@@ -93,6 +136,10 @@ export interface DatosCliente {
   domicilio: string | null;
   /** Qué se le emite: factura en ARCA o recibo sin validez fiscal. */
   documento: 'factura' | 'recibo';
+  /** Moneda de facturación del cliente en el tracker: la del recibo por defecto. */
+  moneda: 'USD' | 'ARS';
+  /** Conceptos que se agregan solos a cada factura o recibo. */
+  conceptos: ConceptoFijo[];
 }
 
 export interface LineaResumen {
@@ -131,6 +178,16 @@ const mediaHoraArriba = (n: number) =>
 /** "12.50" → "12.5", "1.00" → "1". */
 const limpio = (s: string) => String(Number(s));
 
+/** "Tucuman 1031, Rosario, Santa Fe": calle, ciudad y provincia (sin los "-" de relleno del tracker). */
+export function domicilioCompleto(
+  c: Pick<ClienteTracker, 'address' | 'city' | 'province'>,
+): string | null {
+  const partes = [c.address, c.city, c.province]
+    .map((p) => p?.trim() ?? '')
+    .filter((p) => /[A-Za-z0-9]/.test(p));
+  return partes.length ? partes.join(', ') : null;
+}
+
 export function datosCliente(c: ClienteTracker): DatosCliente {
   const cuit = c.cuit?.replace(/\D/g, '') || null;
   return {
@@ -143,8 +200,10 @@ export function datosCliente(c: ClienteTracker): DatosCliente {
     cuit,
     condicionIva: condicionIvaDeTexto(c.ivaCondition),
     email: c.email?.trim() || null,
-    domicilio: c.address?.trim() || null,
+    domicilio: domicilioCompleto(c),
     documento: c.billingDocument === 'recibo' ? 'recibo' : 'factura',
+    moneda: c.billingCurrency === 'ARS' ? 'ARS' : 'USD',
+    conceptos: conceptosValidos(c.billingConcepts),
   };
 }
 
@@ -234,8 +293,11 @@ export function armarResumen(
   const ids = new Set(lineas.map((l) => l.clienteId));
   return {
     mes,
+    // También los que no tienen horas ni abonos pero sí conceptos fijos: se les factura igual.
     clientes: clientes
-      .filter((c) => ids.has(c.id))
+      .filter(
+        (c) => ids.has(c.id) || conceptosValidos(c.billingConcepts).length > 0,
+      )
       .map(datosCliente)
       .sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)),
     lineas,
