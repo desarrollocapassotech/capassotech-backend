@@ -118,6 +118,21 @@ export class FacturacionService {
     return { valor: rate, fijada: locked };
   }
 
+  /**
+   * El TC es uno solo por mes: el que se usa al facturar (o al hacer un recibo) queda como el
+   * del mes, para el tracker, los recibos y las demás facturas. Sin cambios, no se toca.
+   */
+  private async fijarTcDelMes(
+    mes: string,
+    tipoCambio: number | undefined,
+    email?: string,
+  ) {
+    if (tipoCambio === undefined) return;
+    const actual = await this.tipoDeCambio.getUsdRate(mes);
+    if (actual.locked && actual.rate === tipoCambio) return;
+    await this.tipoDeCambio.setMonthlyRate(mes, tipoCambio, email ?? null);
+  }
+
   private async calcular(mes: string) {
     const { desde, hasta } = rangoMes(mes);
     const [horas, proyectos, clientes, cotizacion] = await Promise.all([
@@ -336,8 +351,6 @@ export class FacturacionService {
     dto: { mes?: string; referencias?: unknown; fechaEmision?: unknown },
     email?: string,
     clave?: string,
-    /** TC elegido solo para esta factura: queda en los ítems (el del mes no cambia). */
-    tipoCambioFactura?: number,
   ) {
     const mes = validarMes(dto.mes);
     const refs = Array.isArray(dto.referencias)
@@ -401,11 +414,7 @@ export class FacturacionService {
         descripcion: `Tracker - ${nombreMes(mes)}`,
         confirmar: true,
         items: elegidas.map((l) =>
-          this.item(
-            l,
-            idFacturador.get(l.clienteId)!,
-            tipoCambioFactura ?? r.cotizacion.valor,
-          ),
+          this.item(l, idFacturador.get(l.clienteId)!, r.cotizacion.valor),
         ),
       },
     });
@@ -660,6 +669,7 @@ export class FacturacionService {
       typeof dto.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dto.fecha)
         ? dto.fecha
         : new Date().toISOString().slice(0, 10);
+    const tipoCambio = tipoCambioDe(dto.tipoCambio);
     const lineas = Array.isArray(dto.lineas) ? dto.lineas : [];
     const items = lineas.map((l) => {
       const cantidad = Number(l?.cantidad);
@@ -712,6 +722,7 @@ export class FacturacionService {
         ? dto.mes
         : fecha.slice(0, 7);
     const [anio, numeroMes] = mes.split('-').map(Number);
+    await this.fijarTcDelMes(mes, tipoCambio, email);
     await this.recibos.insert({
       clientId: entidad.id,
       year: anio,
@@ -749,17 +760,10 @@ export class FacturacionService {
     if (sinLineasDelMes && typeof dto.clienteTrackerId === 'string') {
       return this.armarSoloConceptos(dto, clave, email);
     }
-    const tipoCambio =
-      dto.tipoCambio === undefined || dto.tipoCambio === null
-        ? undefined
-        : Number(dto.tipoCambio);
-    if (
-      tipoCambio !== undefined &&
-      !(Number.isFinite(tipoCambio) && tipoCambio > 0)
-    ) {
-      throw new BadRequestException('El tipo de cambio no es válido.');
-    }
-    // Con otro TC los precios en pesos cambian: el modal los manda ya recalculados en `lineas`.
+    const tipoCambio = tipoCambioDe(dto.tipoCambio);
+    // Primero se fija el TC del mes: la factura se arma con ese. Con otro TC los precios en
+    // pesos cambian: el modal los manda ya recalculados en `lineas`.
+    await this.fijarTcDelMes(validarMes(dto.mes), tipoCambio, email);
     const r = await this.facturar(
       {
         mes: dto.mes,
@@ -768,7 +772,6 @@ export class FacturacionService {
       },
       email,
       clave,
-      tipoCambio,
     );
     if (r.errores.length) {
       throw new UnprocessableEntityException(
@@ -926,12 +929,24 @@ export interface DatosRecibo {
   moneda?: unknown;
   fecha?: unknown;
   observaciones?: unknown;
+  /** TC con que se armó el recibo: queda como el del mes. */
+  tipoCambio?: unknown;
   lineas?: Array<{
     descripcion?: unknown;
     cantidad?: unknown;
     unidad?: unknown;
     precioUnitario?: unknown;
   }>;
+}
+
+/** TC que manda el modal (sin valor: no se toca el del mes). */
+function tipoCambioDe(valor: unknown): number | undefined {
+  if (valor === undefined || valor === null) return undefined;
+  const tc = Number(valor);
+  if (!(Number.isFinite(tc) && tc > 0)) {
+    throw new BadRequestException('El tipo de cambio no es válido.');
+  }
+  return tc;
 }
 
 /** "68 h", "35,5 h", "1 mes": lo que va en la columna Cantidad del recibo. */
@@ -958,7 +973,7 @@ export interface DatosEmitir {
   fechaVtoPago?: unknown;
   observaciones?: unknown;
   lineas?: unknown;
-  /** TC solo para esta factura (los precios en pesos llegan recalculados en `lineas`). */
+  /** TC del mes con que se armó la factura: si cambió, queda como el del mes (los precios en pesos llegan recalculados en `lineas`). */
   tipoCambio?: unknown;
 }
 
