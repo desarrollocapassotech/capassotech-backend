@@ -291,9 +291,11 @@ export function armarResumen(
       a.proyecto.nombre.localeCompare(b.proyecto.nombre),
   );
   const ids = new Set(lineas.map((l) => l.clienteId));
+  // También los que tienen un proyecto activo aunque no haya horas (se factura con líneas a mano).
+  for (const p of proyectos) if (p.active && p.clientId) ids.add(p.clientId);
   return {
     mes,
-    // También los que no tienen horas ni abonos pero sí conceptos fijos: se les factura igual.
+    // También los que no tienen proyectos activos pero sí conceptos fijos: se les factura igual.
     clientes: clientes
       .filter(
         (c) => ids.has(c.id) || conceptosValidos(c.billingConcepts).length > 0,

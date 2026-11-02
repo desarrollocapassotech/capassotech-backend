@@ -157,15 +157,25 @@ describe('armarResumen', () => {
     expect(r.advertencias[0]).toMatch(/Interno/);
   });
 
-  it('solo devuelve los clientes que tienen algo para facturar', () => {
+  it('devuelve los clientes con algo para facturar o con un proyecto activo, aunque no tengan horas', () => {
     const r = armarResumen(
       '2026-09',
       [{ date: '2026-09-02', billableHours: '2', projectId: 'p1' }],
-      [proyecto()],
-      [cliente(), cliente({ id: 'c2', name: 'Otro' })],
+      [
+        proyecto(),
+        proyecto({ id: 'p2', clientId: 'c2', billingType: 'monthly', rate: 0 }),
+        proyecto({ id: 'p3', clientId: 'c3', active: false }),
+      ],
+      [
+        cliente(),
+        cliente({ id: 'c2', name: 'Otro', razonSocial: 'Otro SA' }),
+        cliente({ id: 'c3', name: 'Viejo', razonSocial: 'Viejo SA' }),
+        cliente({ id: 'c4', name: 'Sin proyectos', razonSocial: 'Sin proyectos SA' }),
+      ],
       1000,
     );
-    expect(r.clientes.map((c) => c.id)).toEqual(['c1']);
+    expect(r.clientes.map((c) => c.id)).toEqual(['c1', 'c2']);
+    expect(r.lineas.map((l) => l.clienteId)).toEqual(['c1']);
   });
 });
 
@@ -212,11 +222,11 @@ describe('conceptos fijos', () => {
     precioUnitario: '50000',
   };
 
-  it('un cliente sin horas ni abonos pero con conceptos aparece en el resumen', () => {
+  it('un cliente sin proyectos activos pero con conceptos aparece en el resumen', () => {
     const r = armarResumen(
       '2026-09',
       [],
-      [proyecto()],
+      [proyecto({ active: false })],
       [
         cliente(),
         cliente({ id: 'c2', name: 'Beta', billingConcepts: [hosting] }),
