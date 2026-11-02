@@ -755,6 +755,8 @@ export class FacturacionService {
 
   /** Carga las líneas marcadas de un cliente y arma su comprobante (sin emitirlo). */
   private async armarDelMes(dto: DatosEmitir, clave: string, email?: string) {
+    // Se valida lo editado (período, etc.) antes de cargar nada.
+    const cambios = ediciones(dto);
     const sinLineasDelMes =
       !Array.isArray(dto.referencias) || dto.referencias.length === 0;
     if (sinLineasDelMes && typeof dto.clienteTrackerId === 'string') {
@@ -787,7 +789,7 @@ export class FacturacionService {
     }
     return {
       creado: r.comprobantes[0] as ComprobantePublico,
-      cambios: ediciones(dto),
+      cambios,
     };
   }
 
@@ -971,6 +973,9 @@ export interface DatosEmitir {
   referencias?: unknown;
   fechaEmision?: unknown;
   fechaVtoPago?: unknown;
+  /** Período del servicio (yyyy-MM-dd); sin valor, el del mes. */
+  fechaServicioDesde?: unknown;
+  fechaServicioHasta?: unknown;
   observaciones?: unknown;
   lineas?: unknown;
   /** TC del mes con que se armó la factura: si cambió, queda como el del mes (los precios en pesos llegan recalculados en `lineas`). */
@@ -978,8 +983,27 @@ export interface DatosEmitir {
 }
 
 /** Lo que el usuario cambió en el modal (el Facturador valida cada campo). */
+const FECHA = /^\d{4}-\d{2}-\d{2}$/;
+
 function ediciones(dto: DatosEmitir): Record<string, unknown> {
+  const desde = dto.fechaServicioDesde;
+  const hasta = dto.fechaServicioHasta;
+  if (
+    (desde !== undefined &&
+      !(typeof desde === 'string' && FECHA.test(desde))) ||
+    (hasta !== undefined && !(typeof hasta === 'string' && FECHA.test(hasta)))
+  ) {
+    throw new BadRequestException('El período no es válido.');
+  }
+  if (typeof desde === 'string' && typeof hasta === 'string' && desde > hasta) {
+    throw new BadRequestException(
+      'El período: la fecha "desde" no puede ser posterior a la "hasta".',
+    );
+  }
   return {
+    // Período del servicio elegido en el modal (si no, queda el del mes).
+    ...(typeof desde === 'string' ? { fechaServicioDesde: desde } : {}),
+    ...(typeof hasta === 'string' ? { fechaServicioHasta: hasta } : {}),
     ...(typeof dto.fechaVtoPago === 'string' && dto.fechaVtoPago
       ? { fechaVtoPago: dto.fechaVtoPago }
       : {}),

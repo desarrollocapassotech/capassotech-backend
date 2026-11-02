@@ -723,6 +723,37 @@ describe('FacturacionService', () => {
     expect(f.llamadas.filter((l) => l.metodo === 'PATCH')).toHaveLength(1);
   });
 
+  it('el período elegido en el modal reemplaza al del mes; uno inválido se rechaza', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f);
+    const datos = {
+      mes: '2026-09',
+      referencias: ['tracker:c1:p1:2026-09'],
+      fechaServicioDesde: '2026-09-15',
+      fechaServicioHasta: '2026-09-30',
+    };
+    await s.guardarBorrador(datos, 'clave-per', EMAIL);
+    const patch = f.llamadas.find((l) => l.metodo === 'PATCH')!;
+    expect(patch.opciones.body).toMatchObject({
+      fechaServicioDesde: '2026-09-15',
+      fechaServicioHasta: '2026-09-30',
+    });
+    await expect(
+      s.guardarBorrador(
+        { ...datos, fechaServicioDesde: '2026-10-01' },
+        'clave-per-2',
+        EMAIL,
+      ),
+    ).rejects.toThrow('posterior');
+    await expect(
+      s.guardarBorrador(
+        { ...datos, fechaServicioHasta: '30/09/2026' },
+        'clave-per-3',
+        EMAIL,
+      ),
+    ).rejects.toThrow('período no es válido');
+  });
+
   it('anular: crea la nota de crédito y la emite en un paso; reintentar no crea otra', async () => {
     const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
     const s = servicio(f);
