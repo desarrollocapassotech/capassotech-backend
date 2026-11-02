@@ -298,8 +298,14 @@ function servicio(
       },
     ),
   } as unknown as Repository<ClientEntity>;
+  // El TC del mes que guarda el tracker: facturar con otro lo cambia.
+  const tcDelMes = { ...cotizacion };
   const tipoDeCambio = {
-    getUsdRate: jest.fn().mockResolvedValue(cotizacion),
+    getUsdRate: jest.fn(() => Promise.resolve({ ...tcDelMes })),
+    setMonthlyRate: jest.fn((_mes: string, rate: number) => {
+      Object.assign(tcDelMes, { rate, locked: true });
+      return Promise.resolve({ rate, locked: true });
+    }),
   } as unknown as ExchangeRateService;
   const recibos = {
     find: jest.fn(({ where }: { where: { year: number; month: number } }) =>
@@ -610,7 +616,7 @@ describe('FacturacionService', () => {
     ).rejects.toThrow('ya están en otro comprobante');
   });
 
-  it('facturar y emitir con un TC solo para esa factura: queda en los ítems y el del mes no cambia', async () => {
+  it('facturar y emitir con otro TC: pasa a ser el del mes y la factura se arma con ese', async () => {
     const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
     const s = servicio(f);
     const lineas = [
@@ -639,7 +645,10 @@ describe('FacturacionService', () => {
       tipoCambio: 1200,
     });
     expect(f.comprobantes.get('cmp1')).toMatchObject({ lineas });
-    expect((await s.resumen('2026-09', EMAIL)).cotizacion.valor).toBe(1000);
+    expect((await s.resumen('2026-09', EMAIL)).cotizacion).toEqual({
+      valor: 1200,
+      fijada: true,
+    });
 
     await expect(
       s.facturarYEmitir(
@@ -652,6 +661,31 @@ describe('FacturacionService', () => {
         EMAIL,
       ),
     ).rejects.toThrow('tipo de cambio');
+  });
+
+  it('facturar un mes sin TC guardado lo fija con el de la factura; sin TC en el pedido no se toca', async () => {
+    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
+    const s = servicio(f, { rate: 1100, locked: false });
+    await s.guardarBorrador(
+      { mes: '2026-09', referencias: ['tracker:c2:p2:2026-09'] },
+      'clave-sin-tc',
+      EMAIL,
+    );
+    expect((await s.resumen('2026-09', EMAIL)).cotizacion.fijada).toBe(false);
+
+    await s.facturarYEmitir(
+      {
+        mes: '2026-09',
+        referencias: ['tracker:c1:p1:2026-09'],
+        tipoCambio: 1100,
+      },
+      'clave-tc-mes',
+      EMAIL,
+    );
+    expect((await s.resumen('2026-09', EMAIL)).cotizacion).toEqual({
+      valor: 1100,
+      fijada: true,
+    });
   });
 
   it('factura manual: se crea y se emite en un paso', async () => {
