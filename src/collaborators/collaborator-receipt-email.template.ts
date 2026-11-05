@@ -10,6 +10,7 @@ export const RECEIPT_ACK_BUTTON_LABEL = '&#10003; Ya recibí el dinero';
 // Verde a propósito: es la única acción del email y tiene que resaltar sobre los
 // tonos carbón y celeste del resto del diseño.
 export const RECEIPT_ACK_BUTTON_COLOR = '#15803d';
+export const RECEIPT_ACK_BUTTON_EDGE_COLOR = '#14532d';
 
 // Colores de marca del frontend (ver tailwind.config.ts: carbon, marca.suave, marca.oscuro).
 const COLOR_CARBON = '#1a1a1a';
@@ -45,14 +46,14 @@ function buildStatCard(label: string, value: string, detail?: string): string {
 
 function buildAcknowledgeButton(acknowledgeUrl: string): string {
   return `
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:12px;">
+    <table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:24px auto 12px;">
       <tr>
-        <td align="center" bgcolor="${RECEIPT_ACK_BUTTON_COLOR}" style="background-color:${RECEIPT_ACK_BUTTON_COLOR}; border-radius:12px;">
-          <a href="${escapeHtml(acknowledgeUrl)}" target="_blank" style="display:block; padding:20px 16px; font-size:19px; line-height:24px; font-weight:700; color:#ffffff; text-decoration:none;">${RECEIPT_ACK_BUTTON_LABEL}</a>
+        <td align="center" bgcolor="${RECEIPT_ACK_BUTTON_COLOR}" style="background-color:${RECEIPT_ACK_BUTTON_COLOR}; border-radius:10px; border-bottom:4px solid ${RECEIPT_ACK_BUTTON_EDGE_COLOR}; box-shadow:0 4px 10px rgba(21,128,61,0.35);">
+          <a href="${escapeHtml(acknowledgeUrl)}" target="_blank" style="display:inline-block; padding:16px 32px; font-size:18px; line-height:24px; font-weight:700; color:#ffffff; text-decoration:none; white-space:nowrap;">${RECEIPT_ACK_BUTTON_LABEL}</a>
         </td>
       </tr>
     </table>
-    <p style="margin:0 0 20px; font-size:13px; line-height:20px; color:#6b7280; text-align:center;">Cuando te llegue el pago, tocá el botón para avisarnos.</p>`;
+    <p style="margin:0 0 28px; font-size:13px; line-height:20px; color:#6b7280; text-align:center;">Cuando te llegue el pago, tocá el botón para avisarnos.</p>`;
 }
 
 // Sin horas cargadas en el mes no se muestra el bloque: un "0 hs" sería engañoso
@@ -114,7 +115,7 @@ function buildPaymentInfo(receipt: GenerateCollaboratorReceiptDto): string {
 function buildClosing(): string {
   return `
     <p style="margin:0 0 8px; font-size:14px; line-height:22px; color:#374151;">¡Gracias por tu trabajo de este mes!</p>
-    <p style="margin:0; font-size:13px; line-height:20px; color:#6b7280;">Si algo no te cierra, escribinos a <a href="mailto:${RECEIPT_CONTACT_EMAIL}" style="color:${COLOR_MARCA_OSCURO}; text-decoration:none; font-weight:600;">${RECEIPT_CONTACT_EMAIL}</a>.</p>`;
+    <p style="margin:0; font-size:13px; line-height:20px; color:#6b7280;">Si algo no te cierra, escribinos a <a href="mailto:${RECEIPT_CONTACT_EMAIL}" style="color:${COLOR_MARCA_OSCURO}; text-decoration:none; font-weight:600;">${RECEIPT_CONTACT_EMAIL}</a> o por Slack a Flor o Elias.</p>`;
 }
 
 export function buildCollaboratorReceiptEmailHtml(
