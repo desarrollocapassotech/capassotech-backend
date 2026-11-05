@@ -170,7 +170,11 @@ describe('armarResumen', () => {
         cliente(),
         cliente({ id: 'c2', name: 'Otro', razonSocial: 'Otro SA' }),
         cliente({ id: 'c3', name: 'Viejo', razonSocial: 'Viejo SA' }),
-        cliente({ id: 'c4', name: 'Sin proyectos', razonSocial: 'Sin proyectos SA' }),
+        cliente({
+          id: 'c4',
+          name: 'Sin proyectos',
+          razonSocial: 'Sin proyectos SA',
+        }),
       ],
       1000,
     );

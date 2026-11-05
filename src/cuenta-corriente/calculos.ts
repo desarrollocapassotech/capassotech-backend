@@ -220,7 +220,8 @@ export function comprobantePrevioDe(
   return {
     comprobanteId: c.id,
     tipo: c.tipo ?? null,
-    numero: c.numero != null ? numeroDeComprobante(c.puntoVenta, c.numero) : null,
+    numero:
+      c.numero != null ? numeroDeComprobante(c.puntoVenta, c.numero) : null,
     total: Number.isFinite(total) ? total : null,
     moneda: c.moneda ?? null,
     ambiente: c.ambiente ?? null,
