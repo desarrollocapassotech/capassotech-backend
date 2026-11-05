@@ -208,6 +208,10 @@ export class CcImputationEntity {
   })
   exchangeRate: string | null;
 
+  /** Adicional de un recibo (hora extra, bono): la imputación en cuyo recibo sale impreso. */
+  @Column({ name: 'recibo_de', type: 'uuid', nullable: true })
+  reciboDe: string | null;
+
   /** null: la imputación no emite comprobante (ya estaba facturado). */
   @Column({ type: 'text', nullable: true })
   documento: 'factura' | 'recibo' | null;

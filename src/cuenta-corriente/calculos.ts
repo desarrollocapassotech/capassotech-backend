@@ -171,6 +171,29 @@ export function mesesCerrados(desde: string, hoy: string): string[] {
   }
 }
 
+export interface AdicionalRecibo {
+  descripcion: string;
+  importe: number;
+}
+
+/** Adicionales del recibo que llegan del formulario. `null`: hay alguno mal cargado. */
+export function adicionalesValidos(valor: unknown): AdicionalRecibo[] | null {
+  if (valor === undefined || valor === null) return [];
+  if (!Array.isArray(valor)) return null;
+  const resultado: AdicionalRecibo[] = [];
+  for (const item of valor as Array<Record<string, unknown> | null>) {
+    const descripcion =
+      typeof item?.descripcion === 'string' ? item.descripcion.trim() : '';
+    const importe = Number(item?.importe);
+    if (!descripcion || !Number.isFinite(importe) || importe <= 0) return null;
+    resultado.push({
+      descripcion: descripcion.slice(0, 200),
+      importe: redondear(importe),
+    });
+  }
+  return resultado;
+}
+
 /** Fecha de la cuota `numero` (desde 1): mismo día de cada mes, o el último si ese mes no lo tiene. */
 export function fechaDeCuota(primera: string, numero: number): string {
   const [a, m, d] = primera.split('-').map(Number);

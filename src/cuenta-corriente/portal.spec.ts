@@ -5,6 +5,9 @@ const imputacion = {
   pagoId: 'pago-1',
   cargoId: 'cargo-1',
   importe: 100,
+  importePago: 150000,
+  monedaCargo: 'USD',
+  monedaPago: 'ARS',
   documento: 'factura' as const,
   comprobanteId: 'interno-1',
   comprobanteTipo: 'FACTURA_C',
@@ -61,6 +64,27 @@ describe('cuentaParaPortal', () => {
     expect(texto).not.toContain('interno-1');
     expect(texto).not.toContain('nota interna');
     expect(texto).not.toContain('tracker:x');
+  });
+
+  it('solo pasa los importes de lo vigente', () => {
+    const con = (extra: object) =>
+      cuentaParaPortal({
+        ...cuenta,
+        movimientos: [
+          { ...movimiento, imputaciones: [{ ...imputacion, ...extra }] },
+        ],
+      }).movimientos[0].imputaciones;
+    expect(con({})).toEqual([
+      {
+        pagoId: 'pago-1',
+        cargoId: 'cargo-1',
+        importe: 100,
+        importePago: 150000,
+        monedaCargo: 'USD',
+        monedaPago: 'ARS',
+      },
+    ]);
+    expect(con({ deshecha: true })).toEqual([]);
   });
 
   it('muestra solo comprobantes emitidos y vigentes', () => {

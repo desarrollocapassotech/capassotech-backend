@@ -3,6 +3,12 @@
 // Facturador, ids, comprobantes sin emitir) llegue al cliente por agregarlo a la cuenta.
 
 interface ImputacionCuenta {
+  pagoId: string;
+  cargoId: string;
+  importe: number;
+  importePago: number;
+  monedaCargo?: string;
+  monedaPago?: string;
   documento: 'factura' | 'recibo' | null;
   comprobanteTipo: string | null;
   comprobanteNumero: string | null;
@@ -62,6 +68,17 @@ export function cuentaParaPortal(c: Cuenta) {
           documento: i.documento,
           tipo: i.comprobanteTipo,
           numero: i.comprobanteNumero,
+        })),
+      // Solo los importes vigentes: con eso lo cancelado se ve igual que en administración.
+      imputaciones: m.imputaciones
+        .filter((i) => !i.deshecha)
+        .map((i) => ({
+          pagoId: i.pagoId,
+          cargoId: i.cargoId,
+          importe: i.importe,
+          importePago: i.importePago,
+          monedaCargo: i.monedaCargo,
+          monedaPago: i.monedaPago,
         })),
     })),
   };

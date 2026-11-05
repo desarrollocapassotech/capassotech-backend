@@ -14,6 +14,7 @@ import { CollaboratorReceiptService } from '../collaborators/collaborator-receip
 import type { GenerateCollaboratorReceiptDto } from '../collaborators/collaborator-receipt.dto';
 import {
   BillingCurrency,
+  UserRole,
   CcConfigEntity,
   CcImputationEntity,
   CcInstallmentPlanEntity,
@@ -36,6 +37,7 @@ import {
 } from '../facturacion/facturacion.service';
 import { datosCliente, MES, nombreMes, rangoMes } from '../facturacion/resumen';
 import {
+  adicionalesValidos,
   calcularImputacion,
   calcularSaldos,
   conceptoDeCuota,
@@ -47,6 +49,7 @@ import {
   netoDeTotal,
   redondear,
   resolverAjuste,
+  type AdicionalRecibo,
 } from './calculos';
 import { cuentaParaPortal } from './portal';
 
@@ -134,6 +137,8 @@ export interface DatosMovimiento {
   fechaEmision?: unknown;
   /** Cargo en cuotas: `importe` es el de cada una y `fecha`, la de la primera. */
   cuotas?: unknown;
+  /** Pago a un colaborador: horas extra o bonos que se agregan al recibo. `importe` los incluye. */
+  adicionales?: unknown;
 }
 
 export interface DatosImputacion {
@@ -314,8 +319,13 @@ export class CuentaCorrienteService {
             };
           })
         : (await this.colaboradores.find())
-            // Un colaborador que ya no está solo aparece si tiene algo en su cuenta.
-            .filter((c) => c.active || conMovimientos.has(c.id))
+            // Los clientes con usuario también están en esta tabla, con rol client: no son
+            // colaboradores. Uno que ya no está solo aparece si tiene algo en su cuenta.
+            .filter(
+              (c) =>
+                !c.roles?.includes(UserRole.CLIENT) &&
+                (c.active || conMovimientos.has(c.id)),
+            )
             .map((c) => ({
               id: c.id,
               nombre: c.name,
@@ -483,6 +493,7 @@ export class CuentaCorrienteService {
       monedaPago: porId?.get(i.pagoId)?.currency,
       conceptoCargo: porId?.get(i.cargoId)?.concept,
       documento: i.documento,
+      reciboDe: i.reciboDe,
       comprobanteId: i.comprobanteId,
       comprobanteTipo: i.comprobanteTipo,
       comprobanteNumero: i.comprobanteNumero,
@@ -1044,7 +1055,10 @@ export class CuentaCorrienteService {
     return { id: plan.id, imputaciones: [] };
   }
 
-  /** Lo cargado a mano y en cuotas de un mes: el Panel de administración lo suma a lo que se cobra. */
+  /**
+   * Para el Panel de administración: lo cargado a mano y en cuotas a clientes suma a lo que se
+   * cobra; los adicionales de los recibos de colaboradores, a lo que se paga.
+   */
   async cargosDelMes(mes: unknown) {
     if (typeof mes !== 'string' || !MES.test(mes)) {
       throw new BadRequestException('El mes debe tener formato yyyy-MM.');
@@ -1057,11 +1071,23 @@ export class CuentaCorrienteService {
       origen: In(['manual', 'cuota']),
       date: Between(desde, hasta),
     });
-    return filas.map((m) => ({
-      clienteId: m.clientId,
-      importe: Number(m.amount),
-      moneda: m.currency,
-    }));
+    const adicionales = await this.movimientos.findBy({
+      side: 'colaborador',
+      tipo: 'cargo',
+      origen: 'manual',
+      date: Between(desde, hasta),
+    });
+    return {
+      cargos: filas.map((m) => ({
+        clienteId: m.clientId,
+        importe: Number(m.amount),
+        moneda: m.currency,
+      })),
+      adicionales: adicionales.map((m) => ({
+        importe: Number(m.amount),
+        moneda: m.currency,
+      })),
+    };
   }
 
   /** Cargo manual o pago. Un pago con `imputarACargoIds` se imputa del cargo más viejo al más nuevo. */
@@ -1081,8 +1107,25 @@ export class CuentaCorrienteService {
     const cargoIds = Array.isArray(dto.imputarACargoIds)
       ? dto.imputarACargoIds.filter((x): x is string => typeof x === 'string')
       : [];
+    const adicionales = adicionalesValidos(dto.adicionales);
+    if (!adicionales) {
+      throw new BadRequestException(
+        'Cada adicional del recibo necesita descripción e importe mayor a cero.',
+      );
+    }
+    if (adicionales.length && (side !== 'colaborador' || dto.tipo !== 'pago')) {
+      throw new BadRequestException(
+        'Los adicionales son para el recibo de un pago a un colaborador.',
+      );
+    }
+    const totalAdicionales = adicionales.reduce((t, a) => t + a.importe, 0);
     let mov = previo;
     if (!mov) {
+      if (Number(dto.importe) < totalAdicionales - EPS) {
+        throw new BadRequestException(
+          'El pago tiene que cubrir al menos los adicionales del recibo.',
+        );
+      }
       await this.asegurarExiste(side, id);
       if (dto.tipo !== 'cargo' && dto.tipo !== 'pago') {
         throw new BadRequestException('tipo debe ser cargo o pago.');
@@ -1118,7 +1161,14 @@ export class CuentaCorrienteService {
       );
     }
 
-    const resultados: unknown[] = [];
+    const resultados: Array<
+      ReturnType<CuentaCorrienteService['presentarImputacion']>
+    > = [];
+    // Primero los adicionales: el pago los cubre seguro, y lo que queda va a los cargos elegidos.
+    const imputacionesAdicionales =
+      mov.tipo === 'pago' && adicionales.length
+        ? await this.imputarAdicionales(mov, adicionales, clave, email)
+        : [];
     if (mov.tipo === 'pago' && cargoIds.length) {
       const cargos = await this.movimientos.findBy({ id: In(cargoIds) });
       cargos.sort(
@@ -1145,7 +1195,93 @@ export class CuentaCorrienteService {
         if (r) resultados.push(r);
       }
     }
+    if (imputacionesAdicionales.length) {
+      const principal = await this.unirAdicionalesAlRecibo(
+        imputacionesAdicionales,
+        resultados.filter((r) => r.documento === 'recibo').at(-1)?.id,
+        dto.emitir !== false,
+        typeof dto.fechaEmision === 'string' ? dto.fechaEmision : mov.date,
+      );
+      if (principal) resultados.push(principal);
+    }
     return { id: mov.id, imputaciones: resultados };
+  }
+
+  /** Cada adicional queda en la cuenta como un cargo cubierto por este pago. Reintentar no los duplica. */
+  private async imputarAdicionales(
+    pago: CcMovementEntity,
+    adicionales: AdicionalRecibo[],
+    clave: string,
+    email?: string,
+  ) {
+    const ids: string[] = [];
+    for (const [n, a] of adicionales.entries()) {
+      const claveCargo = `${clave}-x${n}`;
+      const cargo =
+        (await this.movimientos.findOneBy({ idempotencyKey: claveCargo })) ??
+        (await this.movimientos.save(
+          this.movimientos.create({
+            side: pago.side,
+            collaboratorId: pago.collaboratorId,
+            tipo: 'cargo',
+            origen: 'manual',
+            concept: a.descripcion,
+            amount: a.importe.toFixed(2),
+            currency: pago.currency,
+            date: pago.date,
+            detail: {
+              lineas: [
+                {
+                  descripcion: a.descripcion,
+                  cantidad: '',
+                  importe: a.importe,
+                },
+              ],
+            },
+            idempotencyKey: claveCargo,
+            createdBy: email ?? null,
+          }),
+        ));
+      const imputacion = await this.imputar(
+        { pagoId: pago.id, cargoId: cargo.id, emitir: false },
+        `${claveCargo}-i`,
+        email,
+      );
+      ids.push(imputacion.id);
+    }
+    return ids;
+  }
+
+  /**
+   * Un solo recibo por pago: los adicionales salen en el de la imputación principal. Si el pago era
+   * solo por adicionales, el primero es el que lleva el recibo.
+   */
+  private async unirAdicionalesAlRecibo(
+    ids: string[],
+    principalId: string | undefined,
+    emitir: boolean,
+    fechaEmision: string,
+  ) {
+    if (!emitir) return null;
+    let principal = principalId;
+    let creada: CcImputationEntity | null = null;
+    if (!principal) {
+      creada = await this.imputaciones.findOneByOrFail({ id: ids[0] });
+      creada.documento = 'recibo';
+      creada.comprobanteTipo = 'RECIBO';
+      creada.comprobanteEstado = 'EMITIDO';
+      creada.fechaEmision = fechaEmision;
+      await this.imputaciones.save(creada);
+      principal = creada.id;
+    }
+    const resto = ids.filter((id) => id !== principal);
+    if (resto.length) {
+      await this.imputaciones.update(
+        { id: In(resto) },
+        { reciboDe: principal },
+      );
+    }
+    return creada ? this.presentarImputacion(creada) : null;
   }
 
   /** Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. */
@@ -1604,7 +1740,19 @@ export class CuentaCorrienteService {
         ? motivo.trim().slice(0, 500)
         : null;
     await this.imputaciones.save(i);
+    await this.eliminarAdicionales(i.id);
     return this.presentarImputacion(i);
+  }
+
+  /** Deshacer un recibo saca también sus adicionales: solo existían por ese recibo. */
+  private async eliminarAdicionales(reciboId: string) {
+    const adicionales = await this.imputaciones.findBy({ reciboDe: reciboId });
+    if (!adicionales.length) return;
+    await this.imputaciones.delete({ id: In(adicionales.map((a) => a.id)) });
+    await this.movimientos.delete({
+      id: In(adicionales.map((a) => a.cargoId)),
+      origen: 'manual',
+    });
   }
 
   // ── Recibos ──────────────────────────────────────────────────────────────
@@ -1642,6 +1790,17 @@ export class CuentaCorrienteService {
     );
     const origen = cargo.detail?.lineas ?? [];
     const fecha = i.fechaEmision ?? hoyArgentina();
+    const adicionales = await this.imputaciones.findBy({
+      reciboDe: i.id,
+      reversedAt: IsNull(),
+    });
+    const cargosAdicionales = adicionales.length
+      ? await this.movimientos.findBy({
+          id: In(adicionales.map((a) => a.cargoId)),
+        })
+      : [];
+    const totalRecibo =
+      total + adicionales.reduce((t, a) => t + Number(a.paymentAmount), 0);
     return {
       colaborador,
       dto: {
@@ -1649,16 +1808,24 @@ export class CuentaCorrienteService {
         fullName: colaborador.name,
         monthYear: nombreMes(cargo.month ?? fecha.slice(0, 7)),
         paymentMethod: pago.paymentMethod ?? colaborador.paymentMethod ?? '',
-        items: lineas.map((l, n) => ({
-          // En el recibo la cantidad va en su propia columna, no en la descripción.
-          description:
-            lineas.length === origen.length
-              ? origen[n].descripcion
-              : l.descripcion,
-          quantity: lineas.length === origen.length ? origen[n].cantidad : '',
-          amount: this.montoTexto(l.importe, pago.currency),
-        })),
-        total: this.montoTexto(total, pago.currency),
+        items: [
+          ...lineas.map((l, n) => ({
+            // En el recibo la cantidad va en su propia columna, no en la descripción.
+            description:
+              lineas.length === origen.length
+                ? origen[n].descripcion
+                : l.descripcion,
+            quantity: lineas.length === origen.length ? origen[n].cantidad : '',
+            amount: this.montoTexto(l.importe, pago.currency),
+          })),
+          ...adicionales.map((a) => ({
+            description:
+              cargosAdicionales.find((c) => c.id === a.cargoId)?.concept ?? '',
+            quantity: '',
+            amount: this.montoTexto(Number(a.paymentAmount), pago.currency),
+          })),
+        ],
+        total: this.montoTexto(totalRecibo, pago.currency),
         currency: pago.currency,
       },
     };

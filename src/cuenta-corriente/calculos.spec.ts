@@ -1,4 +1,5 @@
 import {
+  adicionalesValidos,
   calcularImputacion,
   calcularSaldos,
   conceptoDeCuota,
@@ -156,6 +157,24 @@ describe('mesesCerrados', () => {
   });
   it('arrancar en el mes actual no genera nada', () => {
     expect(mesesCerrados('2026-11', '2026-11-05')).toEqual([]);
+  });
+});
+
+describe('adicionalesValidos', () => {
+  it('sin adicionales da una lista vacía', () => {
+    expect(adicionalesValidos(undefined)).toEqual([]);
+  });
+  it('limpia y redondea', () => {
+    expect(
+      adicionalesValidos([{ descripcion: ' Bono ', importe: '100.555' }]),
+    ).toEqual([{ descripcion: 'Bono', importe: 100.56 }]);
+  });
+  it('rechaza lo mal cargado', () => {
+    expect(adicionalesValidos([{ descripcion: '', importe: 10 }])).toBeNull();
+    expect(
+      adicionalesValidos([{ descripcion: 'Bono', importe: 0 }]),
+    ).toBeNull();
+    expect(adicionalesValidos('Bono')).toBeNull();
   });
 });
 
