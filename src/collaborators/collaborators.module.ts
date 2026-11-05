@@ -7,10 +7,13 @@ import {
   ClientEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
+  CollaboratorReceiptAcknowledgementEntity,
   ProjectCollaboratorEntity,
   ProjectEntity,
   TimeEntryEntity,
 } from '../database/entities';
+import { CollaboratorReceiptAcknowledgementController } from './collaborator-receipt-acknowledgement.controller';
+import { CollaboratorReceiptAcknowledgementService } from './collaborator-receipt-acknowledgement.service';
 import { CollaboratorReceiptService } from './collaborator-receipt.service';
 import { CollaboratorsController } from './collaborators.controller';
 import { CollaboratorsService } from './collaborators.service';
@@ -21,6 +24,7 @@ import { CollaboratorsService } from './collaborators.service';
       CollaboratorEntity,
       AppUserEntity,
       CollaboratorProjectRateEntity,
+      CollaboratorReceiptAcknowledgementEntity,
       ProjectCollaboratorEntity,
       TimeEntryEntity,
       ClientEntity,
@@ -28,8 +32,13 @@ import { CollaboratorsService } from './collaborators.service';
     ]),
     AuthModule,
   ],
-  controllers: [CollaboratorsController],
-  providers: [CollaboratorsService, CollaboratorReceiptService, ResendService],
+  controllers: [CollaboratorsController, CollaboratorReceiptAcknowledgementController],
+  providers: [
+    CollaboratorsService,
+    CollaboratorReceiptService,
+    CollaboratorReceiptAcknowledgementService,
+    ResendService,
+  ],
   exports: [CollaboratorsService],
 })
 export class CollaboratorsModule {}

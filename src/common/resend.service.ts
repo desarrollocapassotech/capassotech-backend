@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 export interface SendEmailOptions {
   to: string[];
+  cc?: string[];
   subject: string;
   html: string;
   attachments?: Array<{ filename: string; content: Buffer }>;
@@ -49,6 +50,7 @@ export class ResendService {
       body: JSON.stringify({
         from: this.fromEmail,
         to: options.to,
+        cc: options.cc,
         subject: options.subject,
         html: options.html,
         attachments: options.attachments?.map((attachment) => ({

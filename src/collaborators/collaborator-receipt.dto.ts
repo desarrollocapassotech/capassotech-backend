@@ -19,9 +19,19 @@ export interface GenerateCollaboratorReceiptDto {
   currency: string;
 }
 
+// Resumen de horas cargadas en el mes, solo para el cuerpo del email (no va en el
+// PDF). Igual que el recibo, viene formateado desde el frontend.
+export interface CollaboratorReceiptHoursSummaryDto {
+  totalHours: string;
+  topProjectName: string;
+  topProjectHours: string;
+}
+
 // Envío por email: mismo payload que la vista previa (el PDF se regenera acá en
 // vez de subirlo desde el navegador) más el destinatario elegido en el diálogo.
+// hoursSummary es opcional: no viene si el colaborador no cargó horas ese mes.
 export interface SendCollaboratorReceiptEmailDto {
   to: string;
   receipt: GenerateCollaboratorReceiptDto;
+  hoursSummary?: CollaboratorReceiptHoursSummaryDto;
 }

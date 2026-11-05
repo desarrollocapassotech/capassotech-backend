@@ -5,7 +5,7 @@ export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (
 // Gmail y la mayoría de los webmail bloquean imágenes data: URI inline en emails
 // recibidos (medida antispam), así que el logo tiene que ser una URL real en vez de
 // ir embebido en base64.
-const LOGO_URL =
+export const LOGO_URL =
   'https://firebasestorage.googleapis.com/v0/b/capassotech-timetracker.firebasestorage.app/o/public%2Fexpense-notification-logo.png?alt=media&token=55fa7d1c-440a-44d5-8e21-7ee4fed23250';
 
 export function buildEmailRowsTable(rows: [string, string][]): string {

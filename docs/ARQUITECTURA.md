@@ -161,6 +161,7 @@ Todos (salvo `GET /` y `GET /health/db`) requieren `Authorization: Bearer
 | GET/POST/PATCH/DELETE | `/time-entries`, `/time-entries/:id` | Alta: cualquiera para sí mismo, admin/contable para cualquiera. Edición: admin/contable. |
 | GET | `/exchange-rate/usd` | |
 | GET | `/health/db` | Sin auth. |
+| GET/POST | `/public/receipt-acknowledgements/:id` | Sin auth (el id del link del email es el acceso). GET muestra la página de confirmación del recibo y POST registra que el colaborador recibió el dinero. |
 
 ## Variables de entorno
 
@@ -174,6 +175,7 @@ Ver [`.env.example`](../.env.example). Resumen:
 | `FIREBASE_STORAGE_BUCKET` | Bucket de Firebase Storage para fotos de perfil. |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Ruta al JSON de la service account del Admin SDK (no se commitea). |
 | `GOOGLE_SHEETS_TIME_ENTRIES_WEBHOOK_URL` | Webhook de Apps Script para el reporting de horas. Si falta, `TimeEntriesService` simplemente no lo dispara (no rompe la carga de horas). |
+| `BACKEND_PUBLIC_URL` | URL pública del backend para el link de confirmación de los recibos. En Render no hace falta: se usa `RENDER_EXTERNAL_URL`, salvo que quieras otro dominio. Sin ninguna de las dos, el envío del recibo falla con un error. |
 
 ## Entornos y deploy
 
