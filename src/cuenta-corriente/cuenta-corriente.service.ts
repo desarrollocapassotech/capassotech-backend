@@ -1,0 +1,1431 @@
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Between, In, Repository } from 'typeorm';
+import { CollaboratorReceiptSenderService } from '../collaborators/collaborator-receipt-sender.service';
+import { CollaboratorReceiptService } from '../collaborators/collaborator-receipt.service';
+import type { GenerateCollaboratorReceiptDto } from '../collaborators/collaborator-receipt.dto';
+import {
+  BillingCurrency,
+  CcConfigEntity,
+  CcImputationEntity,
+  CcMovementEntity,
+  ClientEntity,
+  ClientPaymentEntity,
+  CollaboratorEntity,
+  CollaboratorProjectRateEntity,
+  CollaboratorReceiptAcknowledgementEntity,
+  TimeEntryEntity,
+  type CcDetalle,
+  type CcLineaDetalle,
+  type CcMoneda,
+  type CcSide,
+} from '../database/entities';
+import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
+import { FacturadorClient } from '../integrations/facturador.client';
+import {
+  FacturacionService,
+  type ComprobantePublico,
+} from '../facturacion/facturacion.service';
+import { datosCliente, MES, nombreMes, rangoMes } from '../facturacion/resumen';
+import {
+  calcularImputacion,
+  calcularSaldos,
+  convertir,
+  EPS,
+  horasPagadasDelMes,
+  lineasDelComprobante,
+  mesesCerrados,
+  netoDeTotal,
+  redondear,
+  resolverAjuste,
+} from './calculos';
+
+// Cuenta corriente de clientes y colaboradores. A diferencia de Vialto (donde el cargo nace de
+// la factura), acá el cargo nace de las horas y los abonos del mes, y la factura o el recibo
+// se emiten al imputar un pago, por lo cobrado.
+
+const DIAS_VENCIMIENTO = 10;
+const FECHA = /^\d{4}-\d{2}-\d{2}$/;
+
+export function hoyArgentina() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+  }).format(new Date());
+}
+
+function sumarDias(ymd: string, dias: number) {
+  const [a, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(a, m - 1, d + dias)).toISOString().slice(0, 10);
+}
+
+const monedaValida = (v: unknown): v is CcMoneda => v === 'USD' || v === 'ARS';
+
+function importeValido(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new BadRequestException('Ingresá un importe mayor a cero.');
+  }
+  return redondear(n);
+}
+
+function fechaValida(v: unknown, campo = 'La fecha'): string {
+  if (typeof v !== 'string' || !FECHA.test(v)) {
+    throw new BadRequestException(`${campo} no es válida.`);
+  }
+  return v;
+}
+
+function tcOpcional(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new BadRequestException('El tipo de cambio no es válido.');
+  }
+  return n;
+}
+
+export interface DatosMovimiento {
+  side?: unknown;
+  cuentaId?: unknown;
+  tipo?: unknown;
+  importe?: unknown;
+  moneda?: unknown;
+  fecha?: unknown;
+  concepto?: unknown;
+  fechaVencimiento?: unknown;
+  formaPago?: unknown;
+  referencia?: unknown;
+  imputarACargoIds?: unknown;
+  tipoCambio?: unknown;
+  emitir?: unknown;
+  fechaEmision?: unknown;
+}
+
+export interface DatosImputacion {
+  pagoId?: unknown;
+  cargoId?: unknown;
+  importe?: unknown;
+  tipoCambio?: unknown;
+  /** false: no se emite comprobante (por ejemplo, el mes ya estaba facturado). */
+  emitir?: unknown;
+  fechaEmision?: unknown;
+}
+
+@Injectable()
+export class CuentaCorrienteService {
+  private readonly logger = new Logger(CuentaCorrienteService.name);
+
+  constructor(
+    @InjectRepository(CcConfigEntity)
+    private readonly config: Repository<CcConfigEntity>,
+    @InjectRepository(CcMovementEntity)
+    private readonly movimientos: Repository<CcMovementEntity>,
+    @InjectRepository(CcImputationEntity)
+    private readonly imputaciones: Repository<CcImputationEntity>,
+    @InjectRepository(ClientEntity)
+    private readonly clientes: Repository<ClientEntity>,
+    @InjectRepository(ClientPaymentEntity)
+    private readonly pagosCliente: Repository<ClientPaymentEntity>,
+    @InjectRepository(CollaboratorEntity)
+    private readonly colaboradores: Repository<CollaboratorEntity>,
+    @InjectRepository(CollaboratorProjectRateEntity)
+    private readonly tarifas: Repository<CollaboratorProjectRateEntity>,
+    @InjectRepository(CollaboratorReceiptAcknowledgementEntity)
+    private readonly recibosEnviados: Repository<CollaboratorReceiptAcknowledgementEntity>,
+    @InjectRepository(TimeEntryEntity)
+    private readonly horas: Repository<TimeEntryEntity>,
+    private readonly facturacion: FacturacionService,
+    private readonly facturador: FacturadorClient,
+    private readonly tipoDeCambio: ExchangeRateService,
+    private readonly recibosColaborador: CollaboratorReceiptService,
+    private readonly envioRecibos: CollaboratorReceiptSenderService,
+  ) {}
+
+  // ── Mes de arranque ──────────────────────────────────────────────────────
+
+  async obtenerConfig() {
+    const c = await this.config.findOneBy({ id: 1 });
+    return { mesInicio: c?.startMonth ?? null };
+  }
+
+  /**
+   * Cambiar el mes de arranque a uno posterior borra los cargos generados de antes (si ninguno
+   * tiene imputaciones); a uno anterior, los genera la próxima vez que se abra cada cuenta.
+   */
+  async guardarConfig(mesInicio: unknown, email?: string) {
+    if (typeof mesInicio !== 'string' || !MES.test(mesInicio)) {
+      throw new BadRequestException('El mes debe tener formato yyyy-MM.');
+    }
+    if (mesInicio > hoyArgentina().slice(0, 7)) {
+      throw new BadRequestException(
+        'La cuenta corriente no puede arrancar en un mes futuro.',
+      );
+    }
+    const anteriores = await this.movimientos
+      .createQueryBuilder('m')
+      .where(`m.origen = 'mes' AND m.month < :mes`, { mes: mesInicio })
+      .getMany();
+    if (anteriores.length) {
+      const conImputacion = await this.imputaciones.existsBy({
+        cargoId: In(anteriores.map((m) => m.id)),
+      });
+      if (conImputacion) {
+        throw new ConflictException(
+          'Hay cargos anteriores a ese mes con imputaciones: deshacelas primero.',
+        );
+      }
+      await this.movimientos.delete({ id: In(anteriores.map((m) => m.id)) });
+    }
+    await this.config.save({
+      id: 1,
+      startMonth: mesInicio,
+      updatedBy: email ?? null,
+    });
+    return { mesInicio };
+  }
+
+  // ── Cuenta: movimientos y saldos ─────────────────────────────────────────
+
+  private validarCuenta(
+    side: unknown,
+    id: unknown,
+  ): { side: CcSide; id: string } {
+    if (side !== 'cliente' && side !== 'colaborador') {
+      throw new BadRequestException('side debe ser cliente o colaborador.');
+    }
+    if (typeof id !== 'string' || !id) {
+      throw new BadRequestException('Elegí la cuenta.');
+    }
+    return { side, id };
+  }
+
+  private async asegurarExiste(side: CcSide, id: string) {
+    const existe =
+      side === 'cliente'
+        ? await this.clientes.existsBy({ id })
+        : await this.colaboradores.existsBy({ id });
+    if (!existe) throw new NotFoundException('Cuenta no encontrada.');
+  }
+
+  private dondeCuenta(side: CcSide, id: string) {
+    return side === 'cliente' ? { clientId: id } : { collaboratorId: id };
+  }
+
+  /** Movimientos de la cuenta, con imputaciones, pendientes y saldo por moneda. */
+  async cuenta(sideRaw: unknown, idRaw: unknown) {
+    const { side, id } = this.validarCuenta(sideRaw, idRaw);
+    await this.asegurarExiste(side, id);
+    const { mesInicio } = await this.obtenerConfig();
+    const advertencias = mesInicio
+      ? await this.generarCargos(side, id, mesInicio)
+      : [];
+
+    const movimientos = await this.movimientos.find({
+      where: this.dondeCuenta(side, id),
+    });
+    const ids = movimientos.map((m) => m.id);
+    const imputaciones = ids.length
+      ? await this.imputaciones.find({
+          where: [{ pagoId: In(ids) }, { cargoId: In(ids) }],
+          order: { createdAt: 'ASC' },
+        })
+      : [];
+    const vigentes = imputaciones.filter((i) => !i.reversedAt);
+    const porId = new Map(movimientos.map((m) => [m.id, m]));
+
+    const { porFila, finales } = calcularSaldos(
+      movimientos.map((m) => ({
+        id: m.id,
+        tipo: m.tipo,
+        importe: Number(m.amount),
+        moneda: m.currency,
+        fecha: m.date,
+        creado: m.createdAt.getTime(),
+      })),
+      vigentes.map((i) => ({
+        pagoId: i.pagoId,
+        importeCargo: Number(i.amount),
+        importePago: Number(i.paymentAmount),
+        monedaCargo: porId.get(i.cargoId)!.currency,
+        monedaPago: porId.get(i.pagoId)!.currency,
+      })),
+    );
+
+    const meses = [
+      ...new Set(movimientos.flatMap((m) => (m.month ? [m.month] : []))),
+    ];
+    const tcPorMes = new Map(
+      await Promise.all(
+        meses.map(
+          async (mes) =>
+            [mes, await this.tipoDeCambio.getUsdRate(mes)] as const,
+        ),
+      ),
+    );
+    const tcHoy = await this.tipoDeCambio.getUsdRate(
+      hoyArgentina().slice(0, 7),
+    );
+
+    return {
+      mesInicio,
+      advertencias,
+      tcHoy: { valor: tcHoy.rate, fijado: tcHoy.locked },
+      saldos: Object.entries(finales).map(([moneda, saldo]) => ({
+        moneda,
+        saldo,
+      })),
+      movimientos: movimientos
+        .map((m) => {
+          const tc = m.month ? tcPorMes.get(m.month) : undefined;
+          return {
+            ...this.presentarMovimiento(m, movimientos, imputaciones, porId),
+            saldosAcumulados: porFila.get(m.id) ?? {},
+            tcMes: tc ? { valor: tc.rate, fijado: tc.locked } : null,
+          };
+        })
+        .sort(
+          (a, b) =>
+            b.fecha.localeCompare(a.fecha) ||
+            b.creadoEn.getTime() - a.creadoEn.getTime(),
+        ),
+    };
+  }
+
+  private presentarMovimiento(
+    m: CcMovementEntity,
+    todos: CcMovementEntity[],
+    imputaciones: CcImputationEntity[],
+    porId: Map<string, CcMovementEntity>,
+  ) {
+    const importe = Number(m.amount);
+    const propias = imputaciones.filter(
+      (i) => i.cargoId === m.id || i.pagoId === m.id,
+    );
+    const vigentes = propias.filter((i) => !i.reversedAt);
+    let pendiente = 0;
+    if (m.tipo === 'cargo') {
+      const creditos = todos
+        .filter((x) => x.parentId === m.id && x.tipo === 'credito')
+        .reduce((t, x) => t + Number(x.amount), 0);
+      const imputado = vigentes.reduce((t, i) => t + Number(i.amount), 0);
+      pendiente = Math.max(0, redondear(importe - creditos - imputado));
+    } else if (m.tipo === 'pago') {
+      const usado = vigentes.reduce((t, i) => t + Number(i.paymentAmount), 0);
+      pendiente = Math.max(0, redondear(importe - usado));
+    }
+    return {
+      id: m.id,
+      side: m.side,
+      tipo: m.tipo,
+      origen: m.origen,
+      mes: m.month,
+      parentId: m.parentId,
+      concepto: m.concept,
+      importe,
+      moneda: m.currency,
+      monedaOrigen: m.sourceCurrency,
+      fecha: m.date,
+      fechaVencimiento: m.dueDate,
+      formaPago: m.paymentMethod,
+      referencia: m.reference,
+      lineas: m.detail?.lineas ?? [],
+      pendiente,
+      creadoEn: m.createdAt,
+      imputaciones: propias.map((i) => this.presentarImputacion(i, porId)),
+    };
+  }
+
+  private presentarImputacion(
+    i: CcImputationEntity,
+    porId?: Map<string, CcMovementEntity>,
+  ) {
+    return {
+      id: i.id,
+      pagoId: i.pagoId,
+      cargoId: i.cargoId,
+      importe: Number(i.amount),
+      importePago: Number(i.paymentAmount),
+      tipoCambio: i.exchangeRate != null ? Number(i.exchangeRate) : null,
+      monedaCargo: porId?.get(i.cargoId)?.currency,
+      monedaPago: porId?.get(i.pagoId)?.currency,
+      conceptoCargo: porId?.get(i.cargoId)?.concept,
+      documento: i.documento,
+      comprobanteId: i.comprobanteId,
+      comprobanteTipo: i.comprobanteTipo,
+      comprobanteNumero: i.comprobanteNumero,
+      comprobanteEstado: i.comprobanteEstado,
+      comprobanteError: i.comprobanteError,
+      fechaEmision: i.fechaEmision,
+      deshecha: Boolean(i.reversedAt),
+      creadoEn: i.createdAt,
+    };
+  }
+
+  // ── Cargos del mes ───────────────────────────────────────────────────────
+
+  /**
+   * Genera o actualiza los cargos de los meses cerrados de la cuenta (idempotente: se llama al
+   * abrirla). Sin imputaciones, el cargo sigue a las horas; con imputaciones queda fijo y la
+   * diferencia va en un ajuste aparte. Un mes que no se puede calcular no frena a los demás.
+   */
+  private async generarCargos(
+    side: CcSide,
+    id: string,
+    mesInicio: string,
+  ): Promise<string[]> {
+    const advertencias: string[] = [];
+    for (const mes of mesesCerrados(mesInicio, hoyArgentina())) {
+      try {
+        const calculados =
+          side === 'cliente'
+            ? await this.calcularCargosCliente(id, mes)
+            : await this.calcularCargosColaborador(id, mes);
+        await this.aplicarCargos(side, id, mes, calculados);
+      } catch (err) {
+        this.logger.warn(
+          `No se pudo calcular el cargo de ${mes} (${side} ${id}): ${(err as Error).message}`,
+        );
+        advertencias.push(
+          `No se pudo calcular ${nombreMes(mes)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return advertencias;
+  }
+
+  private async calcularCargosCliente(clienteId: string, mes: string) {
+    const r = await this.facturacion.calcular(mes);
+    const porMoneda = new Map<
+      CcMoneda,
+      { lineas: CcLineaDetalle[]; horas: number }
+    >();
+    const grupo = (moneda: CcMoneda) => {
+      if (!porMoneda.has(moneda))
+        porMoneda.set(moneda, { lineas: [], horas: 0 });
+      return porMoneda.get(moneda)!;
+    };
+    for (const l of r.lineas) {
+      if (l.clienteId !== clienteId || l.problema) continue;
+      const moneda: CcMoneda = l.original ? 'USD' : 'ARS';
+      const g = grupo(moneda);
+      g.lineas.push({
+        descripcion: l.descripcion,
+        cantidad: l.unidad === 'HORA' ? `${l.cantidad} h` : `${l.cantidad} mes`,
+        importe: Number(l.original ? l.original.importe : l.importe),
+        referencia: l.referencia,
+      });
+      if (l.proyecto.tipo === 'hourly') {
+        g.horas += r.horasPorProyecto.get(l.proyecto.id) ?? 0;
+      }
+    }
+    // Los conceptos fijos están en pesos si se le factura; en la moneda del cliente si es recibo.
+    const entidad = await this.clientes.findOneBy({ id: clienteId });
+    if (entidad) {
+      const c = datosCliente(entidad);
+      for (const concepto of c.conceptos) {
+        grupo(c.documento === 'recibo' ? c.moneda : 'ARS').lineas.push({
+          descripcion: concepto.descripcion,
+          cantidad: concepto.cantidad,
+          importe: redondear(
+            Number(concepto.cantidad) * Number(concepto.precioUnitario),
+          ),
+        });
+      }
+    }
+    return [...porMoneda].map(([moneda, g]) => ({
+      moneda,
+      importe: redondear(g.lineas.reduce((t, l) => t + l.importe, 0)),
+      detalle: { lineas: g.lineas, horasFacturables: g.horas },
+    }));
+  }
+
+  /** Lo mismo que arma el recibo del colaborador: horas del mes × valor hora, por proyecto. */
+  private async calcularCargosColaborador(colaboradorId: string, mes: string) {
+    const colaborador = await this.colaboradores.findOneByOrFail({
+      id: colaboradorId,
+    });
+    const { desde, hasta } = rangoMes(mes);
+    const [entradas, overrides] = await Promise.all([
+      this.horas.find({
+        where: {
+          collaboratorId: colaboradorId,
+          date: Between(desde, hasta),
+        },
+      }),
+      this.tarifas.findBy({ collaboratorId: colaboradorId }),
+    ]);
+    const porProyecto = new Map<
+      string,
+      { nombre: string; horas: number; tarifa: number }
+    >();
+    for (const e of entradas) {
+      const actual = porProyecto.get(e.projectId);
+      if (actual) {
+        actual.horas += Number(e.hours);
+        continue;
+      }
+      const override = overrides.find((o) => o.projectId === e.projectId);
+      porProyecto.set(e.projectId, {
+        nombre: e.projectName,
+        horas: Number(e.hours),
+        tarifa: Number(override?.hourlyRate ?? colaborador.hourlyRate),
+      });
+    }
+    const moneda: CcMoneda =
+      colaborador.currency === BillingCurrency.ARS ? 'ARS' : 'USD';
+    const lineas = [...porProyecto.values()]
+      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+      .map((p) => ({
+        descripcion: `HS trabajadas en ${p.nombre} ($${p.tarifa} ${moneda}/h)`,
+        cantidad: `${redondear(p.horas)} hs`,
+        importe: redondear(p.horas * p.tarifa),
+      }));
+    if (!lineas.length) return [];
+    return [
+      {
+        moneda,
+        importe: redondear(lineas.reduce((t, l) => t + l.importe, 0)),
+        detalle: { lineas } as CcDetalle,
+      },
+    ];
+  }
+
+  private async aplicarCargos(
+    side: CcSide,
+    cuentaId: string,
+    mes: string,
+    calculados: Array<{
+      moneda: CcMoneda;
+      importe: number;
+      detalle: CcDetalle;
+    }>,
+  ) {
+    const donde = this.dondeCuenta(side, cuentaId);
+    const existentes = await this.movimientos.find({
+      where: { ...donde, origen: 'mes', month: mes },
+    });
+    const monedas = new Set<CcMoneda>([
+      ...calculados.map((c) => c.moneda),
+      ...existentes.flatMap((e) =>
+        e.sourceCurrency ? [e.sourceCurrency] : [],
+      ),
+    ]);
+    const { hasta } = rangoMes(mes);
+
+    for (const moneda of monedas) {
+      const calculado = calculados.find((c) => c.moneda === moneda);
+      const importe = calculado?.importe ?? 0;
+      const existente = existentes.find((e) => e.sourceCurrency === moneda);
+
+      if (!existente) {
+        if (importe <= EPS) continue;
+        await this.movimientos.insert({
+          side,
+          ...donde,
+          tipo: 'cargo',
+          origen: 'mes',
+          month: mes,
+          concept: `${side === 'cliente' ? 'Servicios' : 'Honorarios'} ${nombreMes(mes)}`,
+          amount: importe.toFixed(2),
+          currency: moneda,
+          sourceCurrency: moneda,
+          sourceAmount: importe.toFixed(2),
+          date: hasta,
+          dueDate: sumarDias(hasta, DIAS_VENCIMIENTO),
+          detail: calculado!.detalle,
+        });
+        continue;
+      }
+
+      const conImputaciones = await this.imputaciones.existsBy({
+        cargoId: existente.id,
+      });
+      if (!conImputaciones) {
+        if (importe <= EPS) {
+          await this.movimientos.delete({ id: existente.id });
+          continue;
+        }
+        const esperado = await this.enMonedaDelCargo(
+          importe,
+          moneda,
+          existente.currency,
+          mes,
+        );
+        if (
+          Math.abs(esperado - Number(existente.amount)) > EPS ||
+          JSON.stringify(existente.detail) !==
+            JSON.stringify(calculado!.detalle)
+        ) {
+          await this.movimientos.update(
+            { id: existente.id },
+            {
+              amount: esperado.toFixed(2),
+              sourceAmount: importe.toFixed(2),
+              detail: calculado!.detalle,
+            },
+          );
+        }
+        continue;
+      }
+
+      const esperado = await this.enMonedaDelCargo(
+        importe,
+        moneda,
+        existente.currency,
+        mes,
+      );
+      await this.aplicarAjuste(existente, esperado);
+    }
+  }
+
+  private async enMonedaDelCargo(
+    importe: number,
+    de: CcMoneda,
+    a: CcMoneda,
+    mes: string,
+  ) {
+    if (de === a) return redondear(importe);
+    return convertir(importe, de, a, await this.tcUtil(mes));
+  }
+
+  /** TC del mes para convertir; el 1 que devuelve getUsdRate cuando no hay dato no sirve. */
+  private async tcUtil(mes: string) {
+    const { rate, locked } = await this.tipoDeCambio.getUsdRate(mes);
+    if (!locked && rate <= 1) {
+      throw new ServiceUnavailableException(
+        'No se pudo obtener el tipo de cambio del día: fijá el del mes.',
+      );
+    }
+    return rate;
+  }
+
+  private async aplicarAjuste(cargo: CcMovementEntity, esperado: number) {
+    const hijos = await this.movimientos.findBy({ parentId: cargo.id });
+    const ajustes = await Promise.all(
+      hijos.map(async (h) => ({
+        id: h.id,
+        importe: h.tipo === 'cargo' ? Number(h.amount) : -Number(h.amount),
+        imputado: await this.imputaciones.existsBy({ cargoId: h.id }),
+      })),
+    );
+    const accion = resolverAjuste(esperado, Number(cargo.amount), ajustes);
+    if (!accion) return;
+    if (accion.accion === 'borrar') {
+      await this.movimientos.delete({ id: accion.id });
+      return;
+    }
+    const tipo = accion.importe > 0 ? ('cargo' as const) : ('credito' as const);
+    const amount = Math.abs(accion.importe).toFixed(2);
+    if (accion.accion === 'actualizar') {
+      await this.movimientos.update({ id: accion.id }, { tipo, amount });
+      return;
+    }
+    await this.movimientos.insert({
+      side: cargo.side,
+      clientId: cargo.clientId,
+      collaboratorId: cargo.collaboratorId,
+      tipo,
+      origen: 'ajuste',
+      month: cargo.month,
+      parentId: cargo.id,
+      concept: `Ajuste ${cargo.concept}`,
+      amount,
+      currency: cargo.currency,
+      date: hoyArgentina(),
+      detail: {
+        lineas: [
+          {
+            descripcion: `Ajuste ${cargo.concept}: se cargaron horas o cambió el TC después de imputar`,
+            cantidad: '',
+            importe: Math.abs(accion.importe),
+          },
+        ],
+      },
+    });
+  }
+
+  // ── Cambiar la moneda de un cargo ────────────────────────────────────────
+
+  /** Selector de moneda del cargo: por defecto la del proyecto; solo sin imputaciones. */
+  async cambiarMoneda(id: string, monedaRaw: unknown, tipoCambio?: unknown) {
+    if (!monedaValida(monedaRaw)) {
+      throw new BadRequestException('moneda debe ser USD o ARS.');
+    }
+    const m = await this.movimientos.findOneBy({ id });
+    if (!m) throw new NotFoundException('Movimiento no encontrado.');
+    if (m.tipo !== 'cargo' || m.origen === 'ajuste') {
+      throw new BadRequestException('Solo se elige la moneda de un cargo.');
+    }
+    if (await this.imputaciones.existsBy({ cargoId: id })) {
+      throw new ConflictException(
+        'El cargo ya tiene imputaciones: deshacelas para cambiar la moneda.',
+      );
+    }
+    if (m.currency === monedaRaw) return { id, moneda: monedaRaw };
+    const tc =
+      tcOpcional(tipoCambio) ??
+      (await this.tcUtil(m.month ?? hoyArgentina().slice(0, 7)));
+    const importe =
+      m.origen === 'mes' && m.sourceCurrency && m.sourceAmount != null
+        ? convertir(Number(m.sourceAmount), m.sourceCurrency, monedaRaw, tc)
+        : convertir(Number(m.amount), m.currency, monedaRaw, tc);
+    await this.movimientos.update(
+      { id },
+      { currency: monedaRaw, amount: importe.toFixed(2) },
+    );
+    return { id, moneda: monedaRaw, importe };
+  }
+
+  // ── Movimientos a mano ───────────────────────────────────────────────────
+
+  /** Saldo con el que arranca la cuenta: positivo es deuda, negativo es a favor. */
+  async cargarSaldoInicial(
+    dto: {
+      side?: unknown;
+      cuentaId?: unknown;
+      importe?: unknown;
+      moneda?: unknown;
+    },
+    email?: string,
+  ) {
+    const { side, id } = this.validarCuenta(dto?.side, dto?.cuentaId);
+    await this.asegurarExiste(side, id);
+    const { mesInicio } = await this.obtenerConfig();
+    if (!mesInicio) {
+      throw new BadRequestException('Primero elegí el mes de arranque.');
+    }
+    if (!monedaValida(dto.moneda)) {
+      throw new BadRequestException('moneda debe ser USD o ARS.');
+    }
+    const n = Number(dto.importe);
+    if (!Number.isFinite(n) || Math.abs(n) <= EPS) {
+      throw new BadRequestException('Ingresá un saldo distinto de cero.');
+    }
+    const ya = await this.movimientos.existsBy({
+      ...this.dondeCuenta(side, id),
+      origen: 'saldo_inicial',
+      currency: dto.moneda,
+    });
+    if (ya) {
+      throw new ConflictException(
+        `La cuenta ya tiene saldo inicial en ${dto.moneda}: eliminalo para cargar otro.`,
+      );
+    }
+    const creado = await this.movimientos.save(
+      this.movimientos.create({
+        side,
+        ...this.dondeCuenta(side, id),
+        tipo: n > 0 ? 'cargo' : 'pago',
+        origen: 'saldo_inicial',
+        concept: 'Saldo inicial',
+        amount: Math.abs(redondear(n)).toFixed(2),
+        currency: dto.moneda,
+        date: `${mesInicio}-01`,
+        createdBy: email ?? null,
+      }),
+    );
+    return { id: creado.id };
+  }
+
+  /** Cargo manual o pago. Un pago con `imputarACargoIds` se imputa del cargo más viejo al más nuevo. */
+  async crearMovimiento(dto: DatosMovimiento, clave: string, email?: string) {
+    const previo = await this.movimientos.findOneBy({ idempotencyKey: clave });
+    const { side, id } = this.validarCuenta(dto?.side, dto?.cuentaId);
+    const cargoIds = Array.isArray(dto.imputarACargoIds)
+      ? dto.imputarACargoIds.filter((x): x is string => typeof x === 'string')
+      : [];
+    let mov = previo;
+    if (!mov) {
+      await this.asegurarExiste(side, id);
+      if (dto.tipo !== 'cargo' && dto.tipo !== 'pago') {
+        throw new BadRequestException('tipo debe ser cargo o pago.');
+      }
+      if (!monedaValida(dto.moneda)) {
+        throw new BadRequestException('moneda debe ser USD o ARS.');
+      }
+      const concepto =
+        typeof dto.concepto === 'string' ? dto.concepto.trim() : '';
+      if (dto.tipo === 'cargo' && !concepto) {
+        throw new BadRequestException('Poné el concepto del cargo.');
+      }
+      const texto = (v: unknown) =>
+        typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null;
+      mov = await this.movimientos.save(
+        this.movimientos.create({
+          side,
+          ...this.dondeCuenta(side, id),
+          tipo: dto.tipo,
+          origen: 'manual',
+          concept: concepto || (side === 'cliente' ? 'Cobro' : 'Pago'),
+          amount: importeValido(dto.importe).toFixed(2),
+          currency: dto.moneda,
+          date: fechaValida(dto.fecha),
+          dueDate: dto.fechaVencimiento
+            ? fechaValida(dto.fechaVencimiento, 'El vencimiento')
+            : null,
+          paymentMethod: texto(dto.formaPago),
+          reference: texto(dto.referencia),
+          idempotencyKey: clave,
+          createdBy: email ?? null,
+        }),
+      );
+    }
+
+    const resultados: unknown[] = [];
+    if (mov.tipo === 'pago' && cargoIds.length) {
+      const cargos = await this.movimientos.findBy({ id: In(cargoIds) });
+      cargos.sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          a.createdAt.getTime() - b.createdAt.getTime(),
+      );
+      for (const cargo of cargos) {
+        const r = await this.imputar(
+          {
+            pagoId: mov.id,
+            cargoId: cargo.id,
+            tipoCambio: dto.tipoCambio,
+            emitir: dto.emitir,
+            fechaEmision: dto.fechaEmision,
+          },
+          `${clave}-${cargo.id.slice(0, 8)}`,
+          email,
+        ).catch((err: Error) => {
+          // El cobro ya está guardado: lo que no se pudo imputar queda a cuenta y se informa.
+          if (err instanceof BadRequestException) return null;
+          throw err;
+        });
+        if (r) resultados.push(r);
+      }
+    }
+    return { id: mov.id, imputaciones: resultados };
+  }
+
+  /** Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. */
+  async eliminarMovimiento(id: string) {
+    const m = await this.movimientos.findOneBy({ id });
+    if (!m) throw new NotFoundException('Movimiento no encontrado.');
+    if (m.origen !== 'manual' && m.origen !== 'saldo_inicial') {
+      throw new BadRequestException(
+        'Los cargos del mes y sus ajustes se generan solos: no se eliminan a mano.',
+      );
+    }
+    const propias = await this.imputaciones.find({
+      where: [{ pagoId: id }, { cargoId: id }],
+    });
+    if (propias.some((i) => !i.reversedAt)) {
+      throw new ConflictException('Primero deshacé sus imputaciones.');
+    }
+    if (propias.some((i) => i.comprobanteId || i.documento)) {
+      throw new ConflictException(
+        'Tiene comprobantes emitidos: queda en la cuenta como registro.',
+      );
+    }
+    if (propias.length) {
+      await this.imputaciones.delete({ id: In(propias.map((i) => i.id)) });
+    }
+    await this.movimientos.delete({ id });
+  }
+
+  // ── Imputar ──────────────────────────────────────────────────────────────
+
+  /** Si el mes ya se facturó o se le hizo recibo por otro lado (para no emitir dos veces). */
+  async comprobantesPrevios(cargoId: string, email?: string) {
+    const c = await this.movimientos.findOneBy({ id: cargoId });
+    if (!c) throw new NotFoundException('Movimiento no encontrado.');
+    if (!c.month) return [];
+    const previos: Array<{
+      descripcion: string;
+      comprobanteId: string | null;
+    }> = [];
+    if (c.side === 'cliente') {
+      const refs = (c.detail?.lineas ?? []).flatMap((l) =>
+        l.referencia ? [l.referencia] : [],
+      );
+      if (refs.length) {
+        const items = await this.facturacion.itemsPorReferencia(refs, email);
+        for (const i of items.values()) {
+          if (['FACTURADO', 'EN_BORRADOR'].includes(i.estado)) {
+            previos.push({
+              descripcion:
+                i.estado === 'FACTURADO'
+                  ? 'Factura emitida'
+                  : 'Factura sin emitir',
+              comprobanteId: i.comprobanteId,
+            });
+          }
+        }
+      }
+      for (const r of await this.facturacion.recibosDelMes(
+        c.clientId!,
+        c.month,
+      )) {
+        previos.push({
+          descripcion: `Recibo del ${r.date} por ${r.currency} ${r.total}`,
+          comprobanteId: null,
+        });
+      }
+      // Los que emitió esta misma pantalla no cuentan: esos ya están en sus imputaciones.
+      const propios = await this.imputaciones.findBy({ cargoId });
+      const ids = new Set(propios.map((i) => i.comprobanteId));
+      const recibosPropios = propios.filter(
+        (i) => i.documento === 'recibo',
+      ).length;
+      let saltear = recibosPropios;
+      return previos.filter((p) => {
+        if (p.comprobanteId) return !ids.has(p.comprobanteId);
+        if (saltear > 0) {
+          saltear -= 1;
+          return false;
+        }
+        return true;
+      });
+    }
+    const enviados = await this.recibosEnviados.findBy({
+      collaboratorId: c.collaboratorId!,
+      monthYear: nombreMes(c.month),
+    });
+    const propios = await this.imputaciones.countBy({ cargoId });
+    return enviados.slice(propios).map((e) => ({
+      descripcion: `Recibo enviado a ${e.recipientEmail} por ${e.total}`,
+      comprobanteId: null,
+    }));
+  }
+
+  async imputar(dto: DatosImputacion, clave: string, email?: string) {
+    const previa = await this.imputaciones.findOneBy({ idempotencyKey: clave });
+    if (previa) return this.emitirSiFalta(previa, email);
+    if (typeof dto?.pagoId !== 'string' || typeof dto?.cargoId !== 'string') {
+      throw new BadRequestException('Elegí el pago y el cargo.');
+    }
+    const pagoId = dto.pagoId;
+    const cargoId = dto.cargoId;
+    const importe =
+      dto.importe === undefined || dto.importe === null || dto.importe === ''
+        ? undefined
+        : importeValido(dto.importe);
+    const fechaEmision = dto.fechaEmision
+      ? fechaValida(dto.fechaEmision, 'La fecha de emisión')
+      : hoyArgentina();
+
+    const cargoInicial = await this.movimientos.findOneBy({ id: cargoId });
+    if (!cargoInicial) throw new NotFoundException('Cargo no encontrado.');
+    // El TC del mes pudo haberse fijado recién: el cargo tiene que estar al día antes de imputar.
+    if (cargoInicial.origen === 'mes') {
+      const { mesInicio } = await this.obtenerConfig();
+      if (mesInicio) {
+        await this.generarCargos(
+          cargoInicial.side,
+          (cargoInicial.clientId ?? cargoInicial.collaboratorId)!,
+          mesInicio,
+        );
+      }
+    }
+
+    const emitirPedido = dto.emitir !== false;
+    const tcPedido = tcOpcional(dto.tipoCambio);
+
+    const imputacion = await this.movimientos.manager.transaction(
+      async (tx) => {
+        // Bloqueo en orden fijo: dos imputaciones a la vez no se pasan del saldo ni se trancan.
+        const filas = await tx.find(CcMovementEntity, {
+          where: { id: In([pagoId, cargoId]) },
+          order: { id: 'ASC' },
+          lock: { mode: 'pessimistic_write' },
+        });
+        const pago = filas.find((m) => m.id === pagoId);
+        const cargo = filas.find((m) => m.id === cargoId);
+        if (!pago || !cargo) {
+          throw new NotFoundException('Pago o cargo no encontrado.');
+        }
+        if (pago.tipo !== 'pago' || cargo.tipo !== 'cargo') {
+          throw new BadRequestException('Se imputa un pago a un cargo.');
+        }
+        if (
+          pago.side !== cargo.side ||
+          pago.clientId !== cargo.clientId ||
+          pago.collaboratorId !== cargo.collaboratorId
+        ) {
+          throw new BadRequestException(
+            'El pago y el cargo son de cuentas distintas.',
+          );
+        }
+
+        const delPago = await tx.find(CcImputationEntity, {
+          where: { pagoId },
+        });
+        const delCargo = await tx.find(CcImputationEntity, {
+          where: { cargoId },
+        });
+        const creditos = await tx.find(CcMovementEntity, {
+          where: { parentId: cargoId, tipo: 'credito' },
+        });
+        const vigente = (i: CcImputationEntity) => !i.reversedAt;
+        const disponiblePago = redondear(
+          Number(pago.amount) -
+            delPago
+              .filter(vigente)
+              .reduce((t, i) => t + Number(i.paymentAmount), 0),
+        );
+        const pendienteCargo = redondear(
+          Number(cargo.amount) -
+            creditos.reduce((t, c) => t + Number(c.amount), 0) -
+            delCargo.filter(vigente).reduce((t, i) => t + Number(i.amount), 0),
+        );
+
+        // Hace falta TC si pago y cargo difieren, o para pasar a pesos una factura de un pago en USD.
+        const documento = await this.documentoDe(
+          cargo,
+          emitirPedido && pago.origen !== 'saldo_inicial',
+        );
+        const requiereTc =
+          pago.currency !== cargo.currency ||
+          (documento === 'factura' && pago.currency === 'USD');
+        const tc = requiereTc
+          ? (tcPedido ?? (await this.tcUtil(pago.date.slice(0, 7))))
+          : tcPedido;
+
+        const calculo = calcularImputacion({
+          importe,
+          pendienteCargo,
+          disponiblePago,
+          monedaCargo: cargo.currency,
+          monedaPago: pago.currency,
+          tc,
+        });
+        if (!calculo) {
+          throw new BadRequestException(
+            disponiblePago <= EPS
+              ? 'El pago ya está imputado por completo.'
+              : 'El cargo ya está cancelado.',
+          );
+        }
+        return tx.save(
+          tx.create(CcImputationEntity, {
+            pagoId,
+            cargoId,
+            amount: calculo.importeCargo.toFixed(2),
+            paymentAmount: calculo.importePago.toFixed(2),
+            exchangeRate: tc != null ? tc.toFixed(4) : null,
+            documento,
+            comprobanteEstado: documento ? 'PENDIENTE' : null,
+            fechaEmision: documento ? fechaEmision : null,
+            idempotencyKey: clave,
+            createdBy: email ?? null,
+          }),
+        );
+      },
+    );
+
+    await this.actualizarHorasPagadas(cargoInicial);
+    return this.emitirSiFalta(imputacion, email);
+  }
+
+  /** Qué comprobante corresponde al imputar este cargo (null: ninguno). */
+  private async documentoDe(cargo: CcMovementEntity, emitir: boolean) {
+    if (!emitir) return null;
+    if (cargo.side === 'colaborador') return 'recibo' as const;
+    const entidad = await this.clientes.findOneByOrFail({
+      id: cargo.clientId!,
+    });
+    return datosCliente(entidad).documento;
+  }
+
+  // ── Emitir el comprobante ────────────────────────────────────────────────
+
+  /**
+   * La imputación ya está guardada: si ARCA o el Facturador fallan, queda con el error a la vista
+   * y se reintenta sin volver a imputar. La clave es fija por imputación e intento, así un
+   * reintento no factura dos veces.
+   */
+  private async emitirSiFalta(i: CcImputationEntity, email?: string) {
+    if (
+      i.comprobanteEstado !== 'PENDIENTE' &&
+      i.comprobanteEstado !== 'ERROR'
+    ) {
+      return this.presentarImputacion(i);
+    }
+    const [cargo, pago] = await Promise.all([
+      this.movimientos.findOneByOrFail({ id: i.cargoId }),
+      this.movimientos.findOneByOrFail({ id: i.pagoId }),
+    ]);
+    try {
+      if (i.documento === 'factura') {
+        await this.emitirFactura(i, cargo, pago, email);
+      } else {
+        await this.emitirRecibo(i, cargo, pago, email);
+      }
+      i.comprobanteError = null;
+    } catch (err) {
+      this.anotarError(i, err);
+    }
+    await this.imputaciones.save(i);
+    return this.presentarImputacion(i);
+  }
+
+  private anotarError(i: CcImputationEntity, err: unknown) {
+    const respuesta =
+      err instanceof HttpException
+        ? (err.getResponse() as { comprobante?: { id?: unknown } } | string)
+        : null;
+    const rechazado =
+      respuesta && typeof respuesta === 'object'
+        ? respuesta.comprobante?.id
+        : undefined;
+    i.comprobanteError = (err as Error).message.slice(0, 1000);
+    if (typeof rechazado === 'string') {
+      // ARCA lo rechazó: el comprobante existe, se corrige y se reintenta desde su detalle.
+      i.comprobanteId = rechazado;
+      i.comprobanteEstado = 'RECHAZADO';
+      return;
+    }
+    i.comprobanteEstado = 'ERROR';
+    // Un 4xx es definitivo: el próximo intento necesita otra clave. Un corte o un 5xx no dicen
+    // si se emitió: se reusa la misma para que el Facturador devuelva el resultado.
+    const status = err instanceof HttpException ? err.getStatus() : 0;
+    if (status >= 400 && status < 500) i.intento += 1;
+    this.logger.warn(`No se pudo emitir ${i.id}: ${i.comprobanteError}`);
+  }
+
+  private conceptoParcial(cargo: CcMovementEntity) {
+    return `Pago a cuenta - ${cargo.concept}`;
+  }
+
+  private cancelaEntero(i: CcImputationEntity, cargo: CcMovementEntity) {
+    return Math.abs(Number(i.amount) - Number(cargo.amount)) <= EPS;
+  }
+
+  private async emitirFactura(
+    i: CcImputationEntity,
+    cargo: CcMovementEntity,
+    pago: CcMovementEntity,
+    email?: string,
+  ) {
+    const totalArs =
+      pago.currency === 'ARS'
+        ? Number(i.paymentAmount)
+        : convertir(
+            Number(i.paymentAmount),
+            'USD',
+            'ARS',
+            Number(i.exchangeRate),
+          );
+    const { puntoVentaId, conIva } = await this.facturacion.datosEmision(email);
+    const lineas = lineasDelComprobante(
+      cargo.detail?.lineas ?? [],
+      totalArs,
+      this.cancelaEntero(i, cargo),
+      this.conceptoParcial(cargo),
+    );
+    const fechaEmision = i.fechaEmision ?? hoyArgentina();
+    const periodo = rangoMes(cargo.month ?? fechaEmision.slice(0, 7));
+    const creado = await this.facturacion.crearYEmitir(
+      {
+        clienteTrackerId: cargo.clientId,
+        puntoVentaId,
+        concepto: 'SERVICIOS',
+        moneda: 'ARS',
+        fechaEmision,
+        fechaServicioDesde: periodo.desde,
+        fechaServicioHasta: periodo.hasta,
+        fechaVtoPago: sumarDias(fechaEmision, DIAS_VENCIMIENTO),
+        lineas: lineas.map((l) => ({
+          descripcion: l.descripcion,
+          cantidad: '1',
+          unidad: 'SERVICIO',
+          // El total del comprobante tiene que dar lo cobrado, con o sin IVA.
+          precioUnitario: netoDeTotal(l.importe, conIva).toFixed(2),
+          alicuotaIva: '21',
+        })),
+      },
+      `cc-${i.id}-${i.intento}`,
+      email,
+    );
+    this.anotarComprobante(i, creado);
+  }
+
+  private anotarComprobante(i: CcImputationEntity, c: ComprobanteConNumero) {
+    i.comprobanteId = c.id;
+    i.comprobanteEstado = c.estado;
+    i.comprobanteTipo = c.tipo ?? i.comprobanteTipo;
+    i.comprobanteNumero =
+      c.numero != null
+        ? `${String(c.puntoVenta ?? 0).padStart(5, '0')}-${String(c.numero).padStart(8, '0')}`
+        : i.comprobanteNumero;
+  }
+
+  private async emitirRecibo(
+    i: CcImputationEntity,
+    cargo: CcMovementEntity,
+    pago: CcMovementEntity,
+    email?: string,
+  ) {
+    if (cargo.side === 'cliente') {
+      const fecha = i.fechaEmision ?? hoyArgentina();
+      await this.facturacion.registrarRecibo(
+        cargo.clientId!,
+        cargo.month ?? fecha.slice(0, 7),
+        fecha,
+        pago.currency,
+        Number(i.paymentAmount).toFixed(2),
+        email,
+      );
+    }
+    i.comprobanteEstado = 'EMITIDO';
+    i.comprobanteTipo = 'RECIBO';
+  }
+
+  private async cargarImputacion(id: string) {
+    const i = await this.imputaciones.findOneBy({ id });
+    if (!i) throw new NotFoundException('Imputación no encontrada.');
+    return i;
+  }
+
+  /** Reintenta un comprobante que no se pudo emitir. */
+  async reintentar(id: string, email?: string) {
+    const i = await this.cargarImputacion(id);
+    if (i.reversedAt) {
+      throw new ConflictException('La imputación ya se deshizo.');
+    }
+    return this.emitirSiFalta(i, email);
+  }
+
+  /** Trae el estado real del Facturador (por si se verificó, corrigió o anuló desde su detalle). */
+  async sincronizar(id: string, email?: string) {
+    const i = await this.cargarImputacion(id);
+    if (!i.comprobanteId) return this.presentarImputacion(i);
+    const c = await this.facturador.pedir<
+      ComprobanteConNumero & {
+        notas?: Array<{ estado: string }>;
+      }
+    >('GET', `/comprobantes/${encodeURIComponent(i.comprobanteId)}`, { email });
+    this.anotarComprobante(i, c);
+    if (c.estado === 'EMITIDO') i.comprobanteError = null;
+    const anulada =
+      c.estado === 'ANULADO' ||
+      (c.notas ?? []).some((n) => n.estado === 'EMITIDO');
+    if (anulada && !i.reversedAt) {
+      i.reversedAt = new Date();
+      i.reversalReason = 'Anulada con nota de crédito desde el comprobante.';
+      await this.imputaciones.save(i);
+      const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
+      await this.actualizarHorasPagadas(cargo);
+    } else {
+      await this.imputaciones.save(i);
+    }
+    return this.presentarImputacion(i);
+  }
+
+  /**
+   * Deshacer: una factura emitida no se puede borrar, se anula con nota de crédito. Si la nota no
+   * sale, la imputación queda como estaba. La fila no se borra: es el rastro de lo emitido.
+   */
+  async deshacer(id: string, motivo: unknown, email?: string) {
+    const i = await this.cargarImputacion(id);
+    if (i.reversedAt) return this.presentarImputacion(i);
+    if (
+      i.comprobanteEstado === 'PENDIENTE_VERIFICACION' ||
+      i.comprobanteEstado === 'EMITIENDO'
+    ) {
+      throw new ConflictException(
+        'El comprobante todavía se está emitiendo: verificalo antes de deshacer.',
+      );
+    }
+    if (
+      i.documento === 'factura' &&
+      i.comprobanteId &&
+      i.comprobanteEstado === 'EMITIDO'
+    ) {
+      const nota = await this.facturacion.anular(
+        i.comprobanteId,
+        motivo,
+        `cc-nc-${i.id}`,
+        email,
+      );
+      if (nota.estado !== 'EMITIDO') {
+        throw new ConflictException(
+          `La nota de crédito quedó en estado ${nota.estado}: revisala antes de deshacer.`,
+        );
+      }
+    }
+    i.reversedAt = new Date();
+    i.reversalReason =
+      typeof motivo === 'string' && motivo.trim()
+        ? motivo.trim().slice(0, 500)
+        : null;
+    await this.imputaciones.save(i);
+    const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
+    await this.actualizarHorasPagadas(cargo);
+    return this.presentarImputacion(i);
+  }
+
+  // ── Recibos ──────────────────────────────────────────────────────────────
+
+  private fechaTexto(ymd: string) {
+    const [a, m, d] = ymd.split('-');
+    return `${d}/${m}/${a}`;
+  }
+
+  private montoTexto(n: number, moneda: CcMoneda) {
+    return `$ ${n.toLocaleString('es-AR', {
+      minimumFractionDigits: moneda === 'ARS' ? 0 : 2,
+      maximumFractionDigits: moneda === 'ARS' ? 0 : 2,
+    })}`;
+  }
+
+  /** Mismo recibo que arma la pantalla de Colaboradores, con lo que se imputó. */
+  private async datosReciboColaborador(i: CcImputationEntity): Promise<{
+    dto: GenerateCollaboratorReceiptDto;
+    colaborador: CollaboratorEntity;
+  }> {
+    const [cargo, pago] = await Promise.all([
+      this.movimientos.findOneByOrFail({ id: i.cargoId }),
+      this.movimientos.findOneByOrFail({ id: i.pagoId }),
+    ]);
+    const colaborador = await this.colaboradores.findOneByOrFail({
+      id: cargo.collaboratorId!,
+    });
+    const total = Number(i.paymentAmount);
+    const lineas = lineasDelComprobante(
+      cargo.detail?.lineas ?? [],
+      total,
+      this.cancelaEntero(i, cargo),
+      this.conceptoParcial(cargo),
+    );
+    const origen = cargo.detail?.lineas ?? [];
+    const fecha = i.fechaEmision ?? hoyArgentina();
+    return {
+      colaborador,
+      dto: {
+        date: this.fechaTexto(fecha),
+        fullName: colaborador.name,
+        monthYear: nombreMes(cargo.month ?? fecha.slice(0, 7)),
+        paymentMethod: pago.paymentMethod ?? colaborador.paymentMethod ?? '',
+        items: lineas.map((l, n) => ({
+          // En el recibo la cantidad va en su propia columna, no en la descripción.
+          description:
+            lineas.length === origen.length
+              ? origen[n].descripcion
+              : l.descripcion,
+          quantity: lineas.length === origen.length ? origen[n].cantidad : '',
+          amount: this.montoTexto(l.importe, pago.currency),
+        })),
+        total: this.montoTexto(total, pago.currency),
+        currency: pago.currency,
+      },
+    };
+  }
+
+  async pdfRecibo(id: string, email?: string) {
+    const i = await this.cargarImputacion(id);
+    if (i.documento !== 'recibo') {
+      throw new BadRequestException('Esa imputación no tiene recibo.');
+    }
+    const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
+    if (cargo.side === 'colaborador') {
+      const { dto } = await this.datosReciboColaborador(i);
+      return {
+        buffer: await this.recibosColaborador.generate(dto),
+        tipo: 'application/pdf',
+      };
+    }
+    const pago = await this.movimientos.findOneByOrFail({ id: i.pagoId });
+    const total = Number(i.paymentAmount);
+    const lineas = lineasDelComprobante(
+      cargo.detail?.lineas ?? [],
+      total,
+      this.cancelaEntero(i, cargo),
+      this.conceptoParcial(cargo),
+    );
+    const { pdf } = await this.facturacion.reciboPdf(
+      {
+        clienteTrackerId: cargo.clientId,
+        mes: cargo.month ?? undefined,
+        moneda: pago.currency,
+        fecha: i.fechaEmision ?? hoyArgentina(),
+        lineas: lineas.map((l) => ({
+          descripcion: l.descripcion,
+          cantidad: 1,
+          unidad: 'SERVICIO',
+          precioUnitario: l.importe,
+        })),
+      },
+      email,
+    );
+    return { buffer: pdf.buffer, tipo: pdf.tipo };
+  }
+
+  /** Envío explícito: nunca sale un email solo por imputar. */
+  async enviarRecibo(id: string, to: unknown) {
+    const i = await this.cargarImputacion(id);
+    if (i.documento !== 'recibo') {
+      throw new BadRequestException('Esa imputación no tiene recibo.');
+    }
+    const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
+    if (cargo.side !== 'colaborador') {
+      throw new BadRequestException(
+        'El envío por email es para recibos de colaboradores.',
+      );
+    }
+    const { dto, colaborador } = await this.datosReciboColaborador(i);
+    return this.envioRecibos.send(colaborador.id, {
+      to: typeof to === 'string' ? to : '',
+      receipt: dto,
+    });
+  }
+
+  // ── Deuda de clientes ────────────────────────────────────────────────────
+
+  /**
+   * La deuda de clientes (portal y ficha) se calcula en horas pagadas por mes: lo imputado se
+   * pasa a horas para que muestre lo mismo que la cuenta corriente.
+   */
+  private async actualizarHorasPagadas(cargo: CcMovementEntity) {
+    if (cargo.side !== 'cliente' || !cargo.month || cargo.origen !== 'mes') {
+      return;
+    }
+    const cargos = await this.movimientos.findBy({
+      clientId: cargo.clientId!,
+      month: cargo.month,
+      origen: 'mes',
+    });
+    const imputaciones = await this.imputaciones.findBy({
+      cargoId: In(cargos.map((c) => c.id)),
+    });
+    const horas = horasPagadasDelMes(
+      cargos.map((c) => ({
+        horas: c.detail?.horasFacturables ?? 0,
+        importe: Number(c.amount),
+        imputado: imputaciones
+          .filter((i) => i.cargoId === c.id && !i.reversedAt)
+          .reduce((t, i) => t + Number(i.amount), 0),
+      })),
+    );
+    const [year, month] = cargo.month.split('-').map(Number);
+    await this.pagosCliente.upsert(
+      {
+        clientId: cargo.clientId!,
+        year,
+        month,
+        hoursPaid: horas.toFixed(2),
+        note: 'Calculado desde Cuenta corriente',
+        updatedBy: 'cuenta-corriente',
+      },
+      ['clientId', 'year', 'month'],
+    );
+  }
+}
+
+interface ComprobanteConNumero extends ComprobantePublico {
+  tipo?: string;
+  numero?: number | null;
+  puntoVenta?: number;
+}

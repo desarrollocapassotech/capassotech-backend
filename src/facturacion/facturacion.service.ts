@@ -133,7 +133,8 @@ export class FacturacionService {
     await this.tipoDeCambio.setMonthlyRate(mes, tipoCambio, email ?? null);
   }
 
-  private async calcular(mes: string) {
+  /** Lo facturable del mes: las líneas de Facturación son también los cargos de la cuenta corriente. */
+  async calcular(mes: string) {
     const { desde, hasta } = rangoMes(mes);
     const [horas, proyectos, clientes, cotizacion] = await Promise.all([
       this.horas.listar(desde, hasta),
@@ -160,7 +161,34 @@ export class FacturacionService {
       clientes,
       cotizacion.valor,
     );
-    return { ...r, cotizacion };
+    // Sin redondear, por proyecto: la deuda de clientes redondea el total del mes a su manera.
+    const horasPorProyecto = new Map<string, number>();
+    for (const e of horas.entries) {
+      horasPorProyecto.set(
+        e.project.id,
+        (horasPorProyecto.get(e.project.id) ?? 0) +
+          Number(e.billableHours || 0),
+      );
+    }
+    return { ...r, cotizacion, horasPorProyecto };
+  }
+
+  /** Datos del Facturador para emitir sin pasar por el modal: punto de venta y si la factura lleva IVA. */
+  async datosEmision(email?: string) {
+    const config = await this.facturador.pedir<{
+      emisor?: { condicionIva?: string };
+      puntosVenta?: Array<{ id: string }>;
+    }>('GET', '/configuracion', { email });
+    const puntoVentaId = config.puntosVenta?.[0]?.id;
+    if (!puntoVentaId) {
+      throw new UnprocessableEntityException(
+        'No hay puntos de venta activos en el Facturador.',
+      );
+    }
+    return {
+      puntoVentaId,
+      conIva: config.emisor?.condicionIva === 'RESPONSABLE_INSCRIPTO',
+    };
   }
 
   /** Cliente del Facturador para cada cliente del tracker (o cómo se va a resolver). */
@@ -219,7 +247,7 @@ export class FacturacionService {
     );
   }
 
-  private async itemsPorReferencia(refs: string[], email?: string) {
+  async itemsPorReferencia(refs: string[], email?: string) {
     const items = new Map<string, ItemFacturador>();
     for (const lote of lotes(refs)) {
       const r = await this.facturador.pedir<ItemFacturador[]>('GET', '/items', {
@@ -653,6 +681,51 @@ export class FacturacionService {
    * del modal y lo genera el Facturador (con sus datos y su logo). No se guarda ni se numera.
    */
   async recibo(dto: DatosRecibo, email?: string) {
+    const { pdf, clienteId, fecha, moneda, total } = await this.reciboPdf(
+      dto,
+      email,
+    );
+    // Se registra por el mes de las horas (o el de la fecha del recibo) para mostrarlo como hecho.
+    const mes =
+      typeof dto.mes === 'string' && MES.test(dto.mes)
+        ? dto.mes
+        : fecha.slice(0, 7);
+    await this.fijarTcDelMes(mes, tipoCambioDe(dto.tipoCambio), email);
+    await this.registrarRecibo(clienteId, mes, fecha, moneda, total, email);
+    return pdf;
+  }
+
+  /** Deja constancia de que se le hizo recibo al cliente por ese mes (el PDF no se guarda). */
+  async registrarRecibo(
+    clienteId: string,
+    mes: string,
+    fecha: string,
+    moneda: 'USD' | 'ARS',
+    total: string,
+    email?: string,
+  ) {
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    await this.recibos.insert({
+      clientId: clienteId,
+      year: anio,
+      month: numeroMes,
+      date: fecha,
+      currency: moneda,
+      total,
+      createdBy: email ?? null,
+    });
+  }
+
+  /** Recibos ya hechos a un cliente por un mes. */
+  recibosDelMes(clienteId: string, mes: string) {
+    const [anio, numeroMes] = mes.split('-').map(Number);
+    return this.recibos.find({
+      where: { clientId: clienteId, year: anio, month: numeroMes },
+    });
+  }
+
+  /** Genera el PDF del recibo en el Facturador, sin registrar nada. */
+  async reciboPdf(dto: DatosRecibo, email?: string) {
     if (typeof dto?.clienteTrackerId !== 'string' || !dto.clienteTrackerId) {
       throw new BadRequestException('Elegí el cliente.');
     }
@@ -669,7 +742,6 @@ export class FacturacionService {
       typeof dto.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dto.fecha)
         ? dto.fecha
         : new Date().toISOString().slice(0, 10);
-    const tipoCambio = tipoCambioDe(dto.tipoCambio);
     const lineas = Array.isArray(dto.lineas) ? dto.lineas : [];
     const items = lineas.map((l) => {
       const cantidad = Number(l?.cantidad);
@@ -716,23 +788,13 @@ export class FacturacionService {
         ? { observaciones: dto.observaciones.trim().slice(0, 1000) }
         : {}),
     });
-    // Se registra por el mes de las horas (o el de la fecha del recibo) para mostrarlo como hecho.
-    const mes =
-      typeof dto.mes === 'string' && MES.test(dto.mes)
-        ? dto.mes
-        : fecha.slice(0, 7);
-    const [anio, numeroMes] = mes.split('-').map(Number);
-    await this.fijarTcDelMes(mes, tipoCambio, email);
-    await this.recibos.insert({
-      clientId: entidad.id,
-      year: anio,
-      month: numeroMes,
-      date: fecha,
-      currency: moneda,
+    return {
+      pdf,
+      clienteId: entidad.id,
+      fecha,
+      moneda: moneda as 'USD' | 'ARS',
       total: pesos(total),
-      createdBy: email ?? null,
-    });
-    return pdf;
+    };
   }
 
   // ── Facturar y emitir en un paso ─────────────────────────────────────────
@@ -841,15 +903,7 @@ export class FacturacionService {
     if (!Array.isArray(dto.lineas) || !dto.lineas.length) {
       throw new BadRequestException('Elegí qué facturar.');
     }
-    const config = await this.facturador.pedir<{
-      puntosVenta?: Array<{ id: string }>;
-    }>('GET', '/configuracion', { email });
-    const puntoVentaId = config.puntosVenta?.[0]?.id;
-    if (!puntoVentaId) {
-      throw new UnprocessableEntityException(
-        'No hay puntos de venta activos en el Facturador.',
-      );
-    }
+    const { puntoVentaId } = await this.datosEmision(email);
     const { desde, hasta } = rangoMes(mes);
     const creado = await this.crearBorrador(
       {

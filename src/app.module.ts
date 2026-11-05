@@ -15,6 +15,7 @@ import { HealthModule } from './health/health.module';
 import { HoursAlertsModule } from './hours-alerts/hours-alerts.module';
 import { IncomeModule } from './income/income.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { CuentaCorrienteModule } from './cuenta-corriente/cuenta-corriente.module';
 import { FacturacionModule } from './facturacion/facturacion.module';
 import { JiraModule } from './jira/jira.module';
 import { TicketsModule } from './tickets/tickets.module';
@@ -40,6 +41,7 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     IncomeModule,
     IntegrationsModule,
     FacturacionModule,
+    CuentaCorrienteModule,
     JiraModule,
     TicketStatesModule,
     TicketsModule,
