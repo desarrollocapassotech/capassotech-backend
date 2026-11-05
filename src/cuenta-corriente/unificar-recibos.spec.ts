@@ -1,6 +1,7 @@
 import {
   mesDeTexto,
   montoDeTexto,
+  reciboConfirmado,
   unificarRecibos,
   type CargoColaborador,
   type ReciboEnviado,
@@ -40,6 +41,49 @@ describe('textos del recibo', () => {
     expect(montoDeTexto('$311,25')).toBe(311.25);
     expect(montoDeTexto('$ 5,50')).toBe(5.5);
     expect(montoDeTexto('$')).toBeNull();
+  });
+});
+
+describe('reciboConfirmado', () => {
+  const acuse = (extra: object) => ({
+    monthYear: 'Octubre 2026',
+    total: '$87.360',
+    currency: 'ARS',
+    acknowledgedAt: new Date(),
+    ...extra,
+  });
+  it('confirma si coinciden mes, moneda e importe', () => {
+    expect(reciboConfirmado([acuse({})], '2026-10', 87360, 'ARS')).toBe(true);
+  });
+  it('acepta los dos formatos de importe de los recibos', () => {
+    expect(
+      reciboConfirmado([acuse({ total: '$ 87.360' })], '2026-10', 87360, 'ARS'),
+    ).toBe(true);
+  });
+  it('sin responder el acuse no confirma', () => {
+    expect(
+      reciboConfirmado(
+        [acuse({ acknowledgedAt: null })],
+        '2026-10',
+        87360,
+        'ARS',
+      ),
+    ).toBe(false);
+  });
+  it('con un reenvío, alcanza con que haya confirmado uno', () => {
+    expect(
+      reciboConfirmado(
+        [acuse({ acknowledgedAt: null }), acuse({})],
+        '2026-10',
+        87360,
+        'ARS',
+      ),
+    ).toBe(true);
+  });
+  it('otro mes, moneda o importe no cuentan', () => {
+    expect(reciboConfirmado([acuse({})], '2026-11', 87360, 'ARS')).toBe(false);
+    expect(reciboConfirmado([acuse({})], '2026-10', 87360, 'USD')).toBe(false);
+    expect(reciboConfirmado([acuse({})], '2026-10', 100, 'ARS')).toBe(false);
   });
 });
 

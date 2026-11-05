@@ -27,6 +27,18 @@ export interface CcDetalle {
   lineas: CcLineaDetalle[];
 }
 
+/** Factura emitida por fuera de la cuenta corriente que cubre un cargo del mes. */
+export interface CcComprobantePrevio {
+  comprobanteId: string;
+  tipo: string | null;
+  /** "00001-00000012". */
+  numero: string | null;
+  total: number | null;
+  moneda: string | null;
+  /** HOMOLOGACION: de prueba, sin validez fiscal. */
+  ambiente: string | null;
+}
+
 // tracker.cc_config: mes desde el que arranca la cuenta corriente (fila única, id = 1).
 @Entity({ name: 'cc_config', schema: 'tracker' })
 export class CcConfigEntity {
@@ -163,6 +175,18 @@ export class CcMovementEntity {
 
   @Column({ type: 'jsonb', nullable: true })
   detail: CcDetalle | null;
+
+  /** Facturas hechas por fuera que cubren este cargo: no emite otra. */
+  @Column({ name: 'comprobantes_previos', type: 'jsonb', nullable: true })
+  comprobantesPrevios: CcComprobantePrevio[] | null;
+
+  /** Cuándo se buscaron esas facturas en el Facturador (se hace una sola vez). */
+  @Column({
+    name: 'comprobante_revisado_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  comprobanteRevisadoAt: Date | null;
 
   @Column({ name: 'idempotency_key', type: 'text', nullable: true })
   idempotencyKey: string | null;

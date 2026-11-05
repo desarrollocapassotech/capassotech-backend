@@ -40,6 +40,7 @@ const movimiento = {
     },
   ],
   saldosAcumulados: { USD: 0 },
+  comprobantesPrevios: [] as Array<Record<string, unknown>> as never[],
   imputaciones: [imputacion],
 };
 
@@ -102,6 +103,34 @@ describe('cuentaParaPortal', () => {
     expect(conEstado({ comprobanteEstado: 'ERROR' })).toEqual([]);
     expect(conEstado({ deshecha: true })).toEqual([]);
     expect(conEstado({ documento: null })).toEqual([]);
+  });
+
+  it('muestra la factura hecha por fuera, salvo que sea de prueba, y sin su id', () => {
+    const previa = {
+      comprobanteId: 'interno-2',
+      tipo: 'FACTURA_C',
+      numero: '00001-00016519',
+      total: 3057600,
+      moneda: 'ARS',
+      ambiente: 'PRODUCCION',
+    };
+    const conPrevia = (ambiente: string) =>
+      cuentaParaPortal({
+        ...cuenta,
+        movimientos: [
+          {
+            ...movimiento,
+            imputaciones: [],
+            comprobantesPrevios: [{ ...previa, ambiente }],
+          },
+        ],
+      });
+    const real = conPrevia('PRODUCCION');
+    expect(real.movimientos[0].comprobantes).toEqual([
+      { documento: 'factura', tipo: 'FACTURA_C', numero: '00001-00016519' },
+    ]);
+    expect(JSON.stringify(real)).not.toContain('interno-2');
+    expect(conPrevia('HOMOLOGACION').movimientos[0].comprobantes).toEqual([]);
   });
 
   it('avisa si faltó calcular algo, sin contar el detalle técnico', () => {

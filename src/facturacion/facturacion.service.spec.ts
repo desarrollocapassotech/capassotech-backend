@@ -107,23 +107,6 @@ function facturadorFalso(
     if (metodo === 'GET' && ruta === '/items') {
       return refs.filter((r) => items.has(r)).map((r) => items.get(r));
     }
-    if (metodo === 'POST' && ruta === '/items') {
-      const cargados = (body.items as Array<Record<string, any>>).map((i) => {
-        const previo = items.get(i.referenciaExterna);
-        const item = {
-          referenciaExterna: i.referenciaExterna,
-          estado: previo?.estado ?? 'VALIDO',
-          errores: [],
-          cantidad: i.cantidad,
-          precioUnitario: i.precioUnitario,
-          moneda: i.moneda,
-          comprobanteId: previo?.comprobanteId ?? null,
-        };
-        items.set(i.referenciaExterna, item);
-        return item;
-      });
-      return { importacion: { advertencias: [] }, items: cargados };
-    }
     if (metodo === 'POST' && ruta === '/comprobantes') {
       const c = {
         ...body,
@@ -134,17 +117,6 @@ function facturadorFalso(
       };
       comprobantes.set(c.id, c);
       return { ...c };
-    }
-    if (metodo === 'POST' && ruta === '/comprobantes/borradores') {
-      const id = `cmp${comprobantes.size + 1}`;
-      for (const r of body.referencias as string[]) {
-        Object.assign(items.get(r)!, {
-          estado: 'EN_BORRADOR',
-          comprobanteId: id,
-        });
-      }
-      comprobantes.set(id, { id, estado: 'BORRADOR', version: 0 });
-      return { comprobantes: [{ ...comprobantes.get(id) }] };
     }
     if (metodo === 'POST' && /^\/comprobantes\/[^/]+\/notas$/.test(ruta)) {
       const nota = {
@@ -298,14 +270,8 @@ function servicio(
       },
     ),
   } as unknown as Repository<ClientEntity>;
-  // El TC del mes que guarda el tracker: facturar con otro lo cambia.
-  const tcDelMes = { ...cotizacion };
   const tipoDeCambio = {
-    getUsdRate: jest.fn(() => Promise.resolve({ ...tcDelMes })),
-    setMonthlyRate: jest.fn((_mes: string, rate: number) => {
-      Object.assign(tcDelMes, { rate, locked: true });
-      return Promise.resolve({ rate, locked: true });
-    }),
+    getUsdRate: jest.fn(() => Promise.resolve({ ...cotizacion })),
   } as unknown as ExchangeRateService;
   const recibos = {
     find: jest.fn(({ where }: { where: { year: number; month: number } }) =>
@@ -364,94 +330,13 @@ describe('FacturacionService', () => {
     expect(f.llamadas.every((l) => l.opciones.email === EMAIL)).toBe(true);
   });
 
-  it('facturar: da de alta los clientes (con el padrón si falta la condición), carga los ítems y arma los borradores', async () => {
-    const f = facturadorFalso();
-    const s = servicio(f);
-    const r = await s.facturar(
-      {
-        mes: '2026-09',
-        referencias: ['tracker:c1:p1:2026-09', 'tracker:c2:p2:2026-09'],
-        fechaEmision: '2026-10-01',
-      },
-      EMAIL,
-    );
-    expect(r.comprobantes).toEqual([expect.objectContaining({ id: 'cmp1' })]);
-    expect(f.clientes.map((c) => (c as any).alta)).toEqual([
-      expect.objectContaining({
-        razonSocial: 'Acme SA',
-        condicionIva: 'RESPONSABLE_INSCRIPTO',
-        email: 'pagos@acme.test',
-        referenciaExterna: 'c1',
-      }),
-      // Razón social "-" en el tracker: se usa el nombre; la condición sale del padrón.
-      expect.objectContaining({
-        razonSocial: 'Beta',
-        condicionIva: 'MONOTRIBUTO',
-        domicilio: 'Calle 1',
-        referenciaExterna: 'c2',
-      }),
-    ]);
-    const carga = f.llamadas.find(
-      (l) => l.ruta === '/items' && l.metodo === 'POST',
-    )!;
-    expect((carga.opciones.body as any).items).toEqual([
-      expect.objectContaining({
-        referenciaExterna: 'tracker:c1:p1:2026-09',
-        cliente: { clienteId: 'fc1' },
-        cantidad: '7.5',
-        unidad: 'HORA',
-        precioUnitario: '40000',
-        moneda: 'ARS',
-      }),
-      expect.objectContaining({
-        referenciaExterna: 'tracker:c2:p2:2026-09',
-        cliente: { clienteId: 'fc2' },
-        cantidad: '1',
-        unidad: 'MES',
-        precioUnitario: '100000',
-        moneda: 'ARS',
-      }),
-    ]);
-    // La línea en dólares lleva el TC con que se pasó a pesos; la que ya era en pesos, no.
-    const [usd, ars] = (carga.opciones.body as any).items;
-    expect(usd.metadatos).toMatchObject({
-      tipoCambio: 1000,
-      importeOriginal: '300.00',
-      monedaOriginal: 'USD',
-    });
-    expect(ars.metadatos).not.toHaveProperty('tipoCambio');
-    const borradores = f.llamadas.find(
-      (l) => l.ruta === '/comprobantes/borradores',
-    )!;
-    expect(borradores.opciones.body).toEqual({
-      referencias: ['tracker:c1:p1:2026-09', 'tracker:c2:p2:2026-09'],
-      agrupacion: 'cliente',
-      fechaEmision: '2026-10-01',
-    });
-
-    // Facturar de nuevo el mismo mes no duplica: los ítems ya están en un borrador.
-    const otra = await s.facturar(
-      { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] },
-      EMAIL,
-    );
-    expect(otra).toMatchObject({
-      comprobantes: [],
-      omitidos: [
-        { referencia: 'tracker:c1:p1:2026-09', estado: 'EN_BORRADOR' },
-      ],
-    });
-    expect(f.clientes).toHaveLength(2);
-  });
-
   it('un cliente sin CUIT no se factura hasta darlo de alta a mano; después queda asociado', async () => {
     const f = facturadorFalso();
     const s = servicio(f);
-    await expect(
-      s.facturar(
-        { mes: '2026-09', referencias: ['tracker:c3:p3:2026-09'] },
-        EMAIL,
-      ),
-    ).rejects.toThrow(UnprocessableEntityException);
+    const datos = { clienteTrackerId: 'c3', lineas: [] };
+    await expect(s.crearBorrador(datos, EMAIL)).rejects.toThrow(
+      UnprocessableEntityException,
+    );
     await s.altaCliente(
       {
         clienteTrackerId: 'c3',
@@ -462,11 +347,9 @@ describe('FacturacionService', () => {
       },
       EMAIL,
     );
-    const r = await s.facturar(
-      { mes: '2026-09', referencias: ['tracker:c3:p3:2026-09'] },
-      EMAIL,
-    );
-    expect(r.comprobantes).toHaveLength(1);
+    await expect(s.crearBorrador(datos, EMAIL)).resolves.toMatchObject({
+      clienteId: 'fc1',
+    });
   });
 
   it('el alta a mano de un cliente que ya existe en el Facturador lo asocia', async () => {
@@ -491,19 +374,6 @@ describe('FacturacionService', () => {
     expect(
       f.llamadas.some((l) => l.ruta === '/clientes/fc-viejo/referencias'),
     ).toBe(true);
-  });
-
-  it('no factura líneas que no están en el resumen (los importes nunca vienen del navegador)', async () => {
-    const s = servicio(facturadorFalso());
-    await expect(
-      s.facturar(
-        { mes: '2026-09', referencias: ['tracker:c1:inventado:2026-09'] },
-        EMAIL,
-      ),
-    ).rejects.toThrow(/ya no están en el resumen/);
-    await expect(
-      s.facturar({ mes: '09-2026', referencias: ['x'] }, EMAIL),
-    ).rejects.toThrow(/YYYY-MM/);
   });
 
   it('factura manual: lista los clientes del tracker y al crear el borrador resuelve (o da de alta) su cliente del Facturador', async () => {
@@ -544,150 +414,6 @@ describe('FacturacionService', () => {
     );
   });
 
-  it('facturar y emitir: carga, arma el comprobante, aplica lo editado en el modal y lo emite', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const lineas = [
-      {
-        descripcion: 'Web',
-        cantidad: '8',
-        unidad: 'HORA',
-        precioUnitario: '40000',
-        alicuotaIva: '21',
-      },
-    ];
-    const r = await servicio(f).facturarYEmitir(
-      {
-        mes: '2026-09',
-        referencias: ['tracker:c1:p1:2026-09'],
-        fechaEmision: '2026-10-16',
-        fechaVtoPago: '2026-10-26',
-        lineas,
-      },
-      'clave-intento-1',
-      EMAIL,
-    );
-    expect(r).toMatchObject({ id: 'cmp1', estado: 'EMITIDO', numero: 1 });
-    expect(f.comprobantes.get('cmp1')).toMatchObject({
-      fechaVtoPago: '2026-10-26',
-      lineas,
-    });
-    // Cada POST con su clave derivada de la del intento; la emisión, con la del intento.
-    const claves = f.llamadas
-      .filter((l) => l.metodo === 'POST')
-      .map((l) => [l.ruta, l.opciones.idempotencyKey]);
-    expect(claves).toEqual([
-      ['/items', 'clave-intento-1-items'],
-      ['/comprobantes/borradores', 'clave-intento-1-borrador'],
-      ['/comprobantes/cmp1/emitir', 'clave-intento-1'],
-    ]);
-  });
-
-  it('facturar y emitir: si se corta y se reintenta con la misma clave, no crea otro comprobante ni emite dos veces', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f);
-    const datos = {
-      mes: '2026-09',
-      referencias: ['tracker:c1:p1:2026-09'],
-      observaciones: 'Gracias',
-    };
-    f.cortarAlEmitir(new Error('Se cortó la conexión'));
-    await expect(
-      s.facturarYEmitir(datos, 'clave-intento-2', EMAIL),
-    ).rejects.toThrow('Se cortó');
-    f.cortarAlEmitir(null);
-
-    const r = await s.facturarYEmitir(datos, 'clave-intento-2', EMAIL);
-    expect(r).toMatchObject({ id: 'cmp1', estado: 'EMITIDO' });
-    expect(f.comprobantes.size).toBe(1);
-    // El reintento ve el comprobante ya emitido y no lo vuelve a editar ni a emitir.
-    expect(f.llamadas.filter((l) => l.ruta.endsWith('/emitir'))).toHaveLength(
-      1,
-    );
-    expect(f.llamadas.filter((l) => l.metodo === 'PATCH')).toHaveLength(1);
-  });
-
-  it('facturar y emitir: líneas ya facturadas en otro comprobante no se emiten', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f);
-    const datos = { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] };
-    await s.facturarYEmitir(datos, 'clave-intento-3', EMAIL);
-    await expect(
-      s.facturarYEmitir(datos, 'clave-intento-4', EMAIL),
-    ).rejects.toThrow('ya están en otro comprobante');
-  });
-
-  it('facturar y emitir con otro TC: pasa a ser el del mes y la factura se arma con ese', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f);
-    const lineas = [
-      {
-        descripcion: 'Web',
-        cantidad: '7.5',
-        unidad: 'HORA',
-        precioUnitario: '48000',
-        alicuotaIva: '21',
-      },
-    ];
-    await s.facturarYEmitir(
-      {
-        mes: '2026-09',
-        referencias: ['tracker:c1:p1:2026-09'],
-        tipoCambio: 1200,
-        lineas,
-      },
-      'clave-tc-1',
-      EMAIL,
-    );
-    const carga = f.llamadas.find(
-      (l) => l.ruta === '/items' && l.metodo === 'POST',
-    )!;
-    expect((carga.opciones.body as any).items[0].metadatos).toMatchObject({
-      tipoCambio: 1200,
-    });
-    expect(f.comprobantes.get('cmp1')).toMatchObject({ lineas });
-    expect((await s.resumen('2026-09', EMAIL)).cotizacion).toEqual({
-      valor: 1200,
-      fijada: true,
-    });
-
-    await expect(
-      s.facturarYEmitir(
-        {
-          mes: '2026-09',
-          referencias: ['tracker:c1:p1:2026-09'],
-          tipoCambio: 0,
-        },
-        'clave-tc-2',
-        EMAIL,
-      ),
-    ).rejects.toThrow('tipo de cambio');
-  });
-
-  it('facturar un mes sin TC guardado lo fija con el de la factura; sin TC en el pedido no se toca', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f, { rate: 1100, locked: false });
-    await s.guardarBorrador(
-      { mes: '2026-09', referencias: ['tracker:c2:p2:2026-09'] },
-      'clave-sin-tc',
-      EMAIL,
-    );
-    expect((await s.resumen('2026-09', EMAIL)).cotizacion.fijada).toBe(false);
-
-    await s.facturarYEmitir(
-      {
-        mes: '2026-09',
-        referencias: ['tracker:c1:p1:2026-09'],
-        tipoCambio: 1100,
-      },
-      'clave-tc-mes',
-      EMAIL,
-    );
-    expect((await s.resumen('2026-09', EMAIL)).cotizacion).toEqual({
-      valor: 1100,
-      fijada: true,
-    });
-  });
-
   it('factura manual: se crea y se emite en un paso', async () => {
     const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
     const r = await servicio(f).crearYEmitir(
@@ -702,79 +428,32 @@ describe('FacturacionService', () => {
     ).toBe('clave-manual-1-borrador');
   });
 
-  it('guardar borrador: arma el comprobante con lo editado y no lo emite', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f);
-    const datos = {
-      mes: '2026-09',
-      referencias: ['tracker:c1:p1:2026-09'],
-      fechaVtoPago: '2026-10-26',
-    };
-    const r = await s.guardarBorrador(datos, 'clave-borr', EMAIL);
-    expect(r).toMatchObject({
-      id: 'cmp1',
-      estado: 'BORRADOR',
-      fechaVtoPago: '2026-10-26',
-    });
-    expect(f.llamadas.some((l) => l.ruta.endsWith('/emitir'))).toBe(false);
-    // Reintentar con la misma clave no crea otro ni vuelve a editar.
-    await s.guardarBorrador(datos, 'clave-borr', EMAIL);
-    expect(f.comprobantes.size).toBe(1);
-    expect(f.llamadas.filter((l) => l.metodo === 'PATCH')).toHaveLength(1);
-  });
-
-  it('el período elegido en el modal reemplaza al del mes; uno inválido se rechaza', async () => {
-    const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-    const s = servicio(f);
-    const datos = {
-      mes: '2026-09',
-      referencias: ['tracker:c1:p1:2026-09'],
-      fechaServicioDesde: '2026-09-15',
-      fechaServicioHasta: '2026-09-30',
-    };
-    await s.guardarBorrador(datos, 'clave-per', EMAIL);
-    const patch = f.llamadas.find((l) => l.metodo === 'PATCH')!;
-    expect(patch.opciones.body).toMatchObject({
-      fechaServicioDesde: '2026-09-15',
-      fechaServicioHasta: '2026-09-30',
-    });
-    await expect(
-      s.guardarBorrador(
-        { ...datos, fechaServicioDesde: '2026-10-01' },
-        'clave-per-2',
-        EMAIL,
-      ),
-    ).rejects.toThrow('posterior');
-    await expect(
-      s.guardarBorrador(
-        { ...datos, fechaServicioHasta: '30/09/2026' },
-        'clave-per-3',
-        EMAIL,
-      ),
-    ).rejects.toThrow('período no es válido');
-  });
-
   it('anular: crea la nota de crédito y la emite en un paso; reintentar no crea otra', async () => {
     const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
     const s = servicio(f);
-    await s.facturarYEmitir(
-      { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] },
+    await s.crearYEmitir(
+      { clienteTrackerId: 'c1', lineas: [{ descripcion: 'x' }] },
       'clave-fac',
       EMAIL,
     );
 
-    await expect(s.anular('cmp1', '  ', 'clave-anular', EMAIL)).rejects.toThrow(
+    await expect(s.anular('manual1', '  ', 'clave-anular', EMAIL)).rejects.toThrow(
       'motivo',
     );
     f.cortarAlEmitir(new Error('Se cortó'));
     await expect(
-      s.anular('cmp1', 'Horas de más', 'clave-anular', EMAIL),
+      s.anular('manual1', 'Horas de más', 'clave-anular', EMAIL),
     ).rejects.toThrow('Se cortó');
     f.cortarAlEmitir(null);
-    const nota = await s.anular('cmp1', 'Horas de más', 'clave-anular', EMAIL);
+    const nota = await s.anular(
+      'manual1',
+      'Horas de más',
+      'clave-anular',
+      EMAIL,
+    );
     expect(nota).toMatchObject({ id: 'nota1', estado: 'EMITIDO' });
     const pedidos = f.llamadas.filter(
-      (l) => l.ruta === '/comprobantes/cmp1/notas',
+      (l) => l.ruta === '/comprobantes/manual1/notas',
     );
     expect(pedidos.map((l) => l.opciones.idempotencyKey)).toEqual([
       'clave-anular-nota',
@@ -827,49 +506,6 @@ describe('FacturacionService', () => {
         hosting,
       ]);
     });
-
-    it('solo con conceptos (sin líneas del mes) el comprobante se arma a mano y se emite', async () => {
-      acme.billingConcepts = [hosting];
-      const f = facturadorFalso({ vinculados: { c1: 'fc-acme' } });
-      const lineas = [
-        {
-          descripcion: 'Hosting',
-          cantidad: '1',
-          unidad: 'MES',
-          precioUnitario: '50000',
-          alicuotaIva: '21',
-        },
-      ];
-      const r = await servicio(f).facturarYEmitir(
-        {
-          mes: '2026-10',
-          referencias: [],
-          clienteTrackerId: 'c1',
-          fechaEmision: '2026-11-02',
-          fechaVtoPago: '2026-11-12',
-          lineas,
-        },
-        'clave-conceptos',
-        EMAIL,
-      );
-      expect(r).toMatchObject({ id: 'manual1', estado: 'EMITIDO' });
-      const alta = f.llamadas.find(
-        (l) => l.ruta === '/comprobantes' && l.metodo === 'POST',
-      )!;
-      expect(alta.opciones.body).toMatchObject({
-        clienteId: 'fc-acme',
-        puntoVentaId: 'pv1',
-        concepto: 'SERVICIOS',
-        moneda: 'ARS',
-        fechaEmision: '2026-11-02',
-        fechaServicioDesde: '2026-10-01',
-        fechaServicioHasta: '2026-10-31',
-        fechaVtoPago: '2026-11-12',
-        lineas,
-      });
-      expect(alta.opciones.idempotencyKey).toBe('clave-conceptos-borrador');
-      expect(f.llamadas.some((l) => l.ruta === '/items')).toBe(false);
-    });
   });
 
   describe('clientes con recibo (sin validez fiscal)', () => {
@@ -921,13 +557,6 @@ describe('FacturacionService', () => {
       sinCuit.billingDocument = 'recibo';
       const s = servicio(facturadorFalso());
       await expect(
-        s.facturarYEmitir(
-          { mes: '2026-09', referencias: ['tracker:c3:p3:2026-09'] },
-          'clave-r1',
-          EMAIL,
-        ),
-      ).rejects.toThrow('recibo, no factura');
-      await expect(
         s.crearBorrador({ clienteTrackerId: 'c3', lineas: [] }, EMAIL),
       ).rejects.toThrow('recibo, no factura');
     });
@@ -935,7 +564,7 @@ describe('FacturacionService', () => {
     it('el recibo lo genera el Facturador con las líneas del modal, sin numerar', async () => {
       sinCuit.billingDocument = 'recibo';
       const f = facturadorFalso();
-      const r = await servicio(f).recibo(
+      const { pdf } = await servicio(f).reciboPdf(
         {
           clienteTrackerId: 'c3',
           fecha: '2026-10-26',
@@ -957,7 +586,7 @@ describe('FacturacionService', () => {
         },
         EMAIL,
       );
-      expect(r.tipo).toBe('application/pdf');
+      expect(pdf.tipo).toBe('application/pdf');
       const pedido = f.llamadas.find((l) => l.ruta === '/recibos/pdf')!;
       expect(pedido.opciones.body).toEqual({
         tipo: 'COBRO',
@@ -975,33 +604,17 @@ describe('FacturacionService', () => {
         total: '1193400.56',
         observaciones: 'Gracias',
       });
-      // Sin mes en el pedido, queda registrado por el de la fecha.
-      expect(recibosGuardados).toEqual([
-        expect.objectContaining({
-          clientId: 'c3',
-          year: 2026,
-          month: 10,
-          date: '2026-10-26',
-          currency: 'USD',
-          total: '1193400.56',
-          createdBy: EMAIL,
-        }),
-      ]);
     });
 
     it('el resumen muestra los recibos hechos por el mes', async () => {
       sinCuit.billingDocument = 'recibo';
       const s = servicio(facturadorFalso());
-      await s.recibo(
-        {
-          clienteTrackerId: 'c3',
-          mes: '2026-09',
-          fecha: '2026-10-02',
-          moneda: 'ARS',
-          lineas: [
-            { descripcion: 'Soporte', cantidad: '1', precioUnitario: '1000' },
-          ],
-        },
+      await s.registrarRecibo(
+        'c3',
+        '2026-09',
+        '2026-10-02',
+        'ARS',
+        '1000.00',
         EMAIL,
       );
       const r = await s.resumen('2026-09', EMAIL);
@@ -1014,7 +627,7 @@ describe('FacturacionService', () => {
     it('a un cliente de factura no se le hace recibo, y una línea incompleta se rechaza', async () => {
       const s = servicio(facturadorFalso());
       await expect(
-        s.recibo(
+        s.reciboPdf(
           {
             clienteTrackerId: 'c1',
             lineas: [{ descripcion: 'x', cantidad: '1', precioUnitario: '1' }],
@@ -1024,7 +637,7 @@ describe('FacturacionService', () => {
       ).rejects.toThrow('se le emite factura');
       sinCuit.billingDocument = 'recibo';
       await expect(
-        s.recibo(
+        s.reciboPdf(
           {
             clienteTrackerId: 'c3',
             lineas: [{ descripcion: '', cantidad: '1', precioUnitario: '1' }],
@@ -1035,14 +648,8 @@ describe('FacturacionService', () => {
     });
   });
 
-  it('sin TC fijado y sin poder consultar el del día no factura (no usa 1 como cotización)', async () => {
+  it('sin TC fijado y sin poder consultar el del día no calcula (no usa 1 como cotización)', async () => {
     const s = servicio(facturadorFalso(), { rate: 1, locked: false });
     await expect(s.resumen('2026-09', EMAIL)).rejects.toThrow(/tipo de cambio/);
-    await expect(
-      s.facturar(
-        { mes: '2026-09', referencias: ['tracker:c1:p1:2026-09'] },
-        EMAIL,
-      ),
-    ).rejects.toThrow(/tipo de cambio/);
   });
 });

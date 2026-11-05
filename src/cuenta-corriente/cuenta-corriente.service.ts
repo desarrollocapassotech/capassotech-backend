@@ -24,6 +24,7 @@ import {
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
   TimeEntryEntity,
+  type CcComprobantePrevio,
   type CcDetalle,
   type CcLineaDetalle,
   type CcMoneda,
@@ -40,18 +41,24 @@ import {
   adicionalesValidos,
   calcularImputacion,
   calcularSaldos,
+  comprobantePrevioDe,
   conceptoDeCuota,
   convertir,
   cuotasAGenerar,
   EPS,
+  facturasDeItems,
+  facturaVigente,
   lineasDelComprobante,
   mesesCerrados,
   netoDeTotal,
+  numeroDeComprobante,
   redondear,
+  type ComprobanteFacturador,
   resolverAjuste,
   type AdicionalRecibo,
 } from './calculos';
 import { cuentaParaPortal } from './portal';
+import { reciboConfirmado } from './unificar-recibos';
 
 // Cuenta corriente de clientes y colaboradores. A diferencia de Vialto (donde el cargo nace de
 // la factura), acá el cargo nace de las horas y los abonos del mes, y la factura o el recibo
@@ -353,8 +360,15 @@ export class CuentaCorrienteService {
     return cuentaParaPortal(await this.cuenta('cliente', cliente.id));
   }
 
-  /** Movimientos de la cuenta, con imputaciones, pendientes y saldo por moneda. */
-  async cuenta(sideRaw: unknown, idRaw: unknown) {
+  /**
+   * Movimientos de la cuenta, con imputaciones, pendientes y saldo por moneda. Con `administracion`
+   * también busca las facturas hechas por fuera: el portal no espera al Facturador.
+   */
+  async cuenta(
+    sideRaw: unknown,
+    idRaw: unknown,
+    administracion?: { email?: string },
+  ) {
     const { side, id } = this.validarCuenta(sideRaw, idRaw);
     await this.asegurarExiste(side, id);
     const { mesInicio } = await this.obtenerConfig();
@@ -366,6 +380,9 @@ export class CuentaCorrienteService {
     const movimientos = await this.movimientos.find({
       where: this.dondeCuenta(side, id),
     });
+    if (administracion) {
+      await this.revisarComprobantes(movimientos, administracion.email);
+    }
     const ids = movimientos.map((m) => m.id);
     const imputaciones = ids.length
       ? await this.imputaciones.find({
@@ -409,6 +426,28 @@ export class CuentaCorrienteService {
       hoyArgentina().slice(0, 7),
     );
 
+    // Pagos cuyo recibo el colaborador ya confirmó desde el link del email.
+    const acuses =
+      side === 'colaborador'
+        ? await this.recibosEnviados.findBy({ collaboratorId: id })
+        : [];
+    const pagosConfirmados = new Set(
+      vigentes
+        .filter((i) => {
+          if (i.documento !== 'recibo') return false;
+          const pago = porId.get(i.pagoId)!;
+          const mes =
+            porId.get(i.cargoId)!.month ??
+            (i.fechaEmision ?? pago.date).slice(0, 7);
+          // El recibo incluye sus adicionales.
+          const total = vigentes
+            .filter((x) => x.id === i.id || x.reciboDe === i.id)
+            .reduce((t, x) => t + Number(x.paymentAmount), 0);
+          return reciboConfirmado(acuses, mes, total, pago.currency);
+        })
+        .map((i) => i.pagoId),
+    );
+
     return {
       mesInicio,
       advertencias,
@@ -424,6 +463,7 @@ export class CuentaCorrienteService {
             ...this.presentarMovimiento(m, movimientos, imputaciones, porId),
             saldosAcumulados: porFila.get(m.id) ?? {},
             tcMes: tc ? { valor: tc.rate, fijado: tc.locked } : null,
+            acuseConfirmado: pagosConfirmados.has(m.id),
           };
         })
         .sort(
@@ -472,6 +512,7 @@ export class CuentaCorrienteService {
       formaPago: m.paymentMethod,
       referencia: m.reference,
       lineas: m.detail?.lineas ?? [],
+      comprobantesPrevios: m.comprobantesPrevios ?? [],
       pendiente,
       creadoEn: m.createdAt,
       imputaciones: propias.map((i) => this.presentarImputacion(i, porId)),
@@ -779,10 +820,13 @@ export class CuentaCorrienteService {
         continue;
       }
 
-      const conImputaciones = previo
-        ? previo.conImputaciones.has(existente.id)
-        : await this.imputaciones.existsBy({ cargoId: existente.id });
-      if (!conImputaciones) {
+      // Ya facturado por fuera, el cargo queda fijo igual que con imputaciones: la factura no cambia.
+      const fijo =
+        (existente.comprobantesPrevios?.length ?? 0) > 0 ||
+        (previo
+          ? previo.conImputaciones.has(existente.id)
+          : await this.imputaciones.existsBy({ cargoId: existente.id }));
+      if (!fijo) {
         if (importe <= EPS) {
           await this.movimientos.delete({ id: existente.id });
           continue;
@@ -1320,67 +1364,73 @@ export class CuentaCorrienteService {
 
   // ── Imputar ──────────────────────────────────────────────────────────────
 
-  /** Si el mes ya se facturó o se le hizo recibo por otro lado (para no emitir dos veces). */
-  async comprobantesPrevios(cargoId: string, email?: string) {
-    const c = await this.movimientos.findOneBy({ id: cargoId });
-    if (!c) throw new NotFoundException('Movimiento no encontrado.');
-    if (!c.month) return [];
-    const previos: Array<{
-      descripcion: string;
-      comprobanteId: string | null;
-    }> = [];
-    if (c.side === 'cliente') {
-      const refs = (c.detail?.lineas ?? []).flatMap((l) =>
-        l.referencia ? [l.referencia] : [],
-      );
-      if (refs.length) {
-        const items = await this.facturacion.itemsPorReferencia(refs, email);
-        for (const i of items.values()) {
-          if (['FACTURADO', 'EN_BORRADOR'].includes(i.estado)) {
-            previos.push({
-              descripcion:
-                i.estado === 'FACTURADO'
-                  ? 'Factura emitida'
-                  : 'Factura sin emitir',
-              comprobanteId: i.comprobanteId,
-            });
-          }
+  private comprobanteDelFacturador(id: string, email?: string) {
+    return this.facturador.pedir<ComprobanteFacturador>(
+      'GET',
+      `/comprobantes/${encodeURIComponent(id)}`,
+      { email },
+    );
+  }
+
+  /**
+   * Las facturas emitidas por fuera de esta pantalla quedan en el cargo del mes que cubren, para
+   * mostrarlas y no emitir otra. Se buscan una sola vez por cargo, con el Facturador de este
+   * ambiente. Si no responde, se corta acá y se reintenta la próxima vez que se abra la cuenta.
+   */
+  private async revisarComprobantes(
+    movimientos: CcMovementEntity[],
+    email?: string,
+  ) {
+    const sinRevisar = movimientos.filter(
+      (m) =>
+        m.side === 'cliente' && m.origen === 'mes' && !m.comprobanteRevisadoAt,
+    );
+    for (const cargo of sinRevisar) {
+      try {
+        const refs = (cargo.detail?.lineas ?? []).flatMap((l) =>
+          l.referencia ? [l.referencia] : [],
+        );
+        const items = refs.length
+          ? await this.facturacion.itemsPorReferencia(refs, email)
+          : new Map<string, { estado: string; comprobanteId: string | null }>();
+        const previos: CcComprobantePrevio[] = [];
+        for (const id of facturasDeItems([...items.values()])) {
+          const c = await this.comprobanteDelFacturador(id, email);
+          if (facturaVigente(c)) previos.push(comprobantePrevioDe(c));
         }
+        cargo.comprobantesPrevios = previos.length ? previos : null;
+        cargo.comprobanteRevisadoAt = new Date();
+        // Solo estas columnas: el resto del cargo pudo haberse regenerado recién.
+        await this.movimientos.update(
+          { id: cargo.id },
+          {
+            comprobantesPrevios: cargo.comprobantesPrevios,
+            comprobanteRevisadoAt: cargo.comprobanteRevisadoAt,
+          },
+        );
+      } catch (err) {
+        this.logger.warn(
+          `No se pudieron buscar las facturas del cargo ${cargo.id}: ${(err as Error).message}`,
+        );
+        return;
       }
-      for (const r of await this.facturacion.recibosDelMes(
-        c.clientId!,
-        c.month,
-      )) {
-        previos.push({
-          descripcion: `Recibo del ${r.date} por ${r.currency} ${r.total}`,
-          comprobanteId: null,
-        });
-      }
-      // Los que emitió esta misma pantalla no cuentan: esos ya están en sus imputaciones.
-      const propios = await this.imputaciones.findBy({ cargoId });
-      const ids = new Set(propios.map((i) => i.comprobanteId));
-      const recibosPropios = propios.filter(
-        (i) => i.documento === 'recibo',
-      ).length;
-      let saltear = recibosPropios;
-      return previos.filter((p) => {
-        if (p.comprobanteId) return !ids.has(p.comprobanteId);
-        if (saltear > 0) {
-          saltear -= 1;
-          return false;
-        }
-        return true;
-      });
     }
-    const enviados = await this.recibosEnviados.findBy({
-      collaboratorId: c.collaboratorId!,
-      monthYear: nombreMes(c.month),
-    });
-    const propios = await this.imputaciones.countBy({ cargoId });
-    return enviados.slice(propios).map((e) => ({
-      descripcion: `Recibo enviado a ${e.recipientEmail} por ${e.total}`,
-      comprobanteId: null,
-    }));
+  }
+
+  /** Lo que se haga con la factura desde su detalle vuelve al cargo: si se anuló, ya no lo cubre. */
+  async sincronizarComprobantesPrevios(cargoId: string, email?: string) {
+    const cargo = await this.movimientos.findOneBy({ id: cargoId });
+    if (!cargo) throw new NotFoundException('Movimiento no encontrado.');
+    const previos: CcComprobantePrevio[] = [];
+    for (const p of cargo.comprobantesPrevios ?? []) {
+      const c = await this.comprobanteDelFacturador(p.comprobanteId, email);
+      if (facturaVigente(c)) previos.push(comprobantePrevioDe(c));
+    }
+    await this.movimientos.update(
+      { id: cargoId },
+      { comprobantesPrevios: previos.length ? previos : null },
+    );
+    return previos;
   }
 
   async imputar(dto: DatosImputacion, clave: string, email?: string) {
@@ -1411,6 +1461,7 @@ export class CuentaCorrienteService {
           mesInicio,
         );
       }
+      await this.revisarComprobantes([cargoInicial], email);
     }
 
     const emitirPedido = dto.emitir !== false;
@@ -1515,10 +1566,23 @@ export class CuentaCorrienteService {
   private async documentoDe(cargo: CcMovementEntity, emitir: boolean) {
     if (!emitir) return null;
     if (cargo.side === 'colaborador') return 'recibo' as const;
+    // Ya tiene su factura: el cobro se imputa sin emitir otra, y deshacerlo no la anula.
+    if (cargo.comprobantesPrevios?.length) return null;
     const entidad = await this.clientes.findOneByOrFail({
       id: cargo.clientId!,
     });
-    return datosCliente(entidad).documento;
+    const documento = datosCliente(entidad).documento;
+    // Sin saber si ya se facturó no se emite: podría salir una factura repetida.
+    if (
+      documento === 'factura' &&
+      cargo.origen === 'mes' &&
+      !cargo.comprobanteRevisadoAt
+    ) {
+      throw new ServiceUnavailableException(
+        'No se pudo consultar el Facturador para ver si este mes ya tiene factura. Probá de nuevo en un momento.',
+      );
+    }
+    return documento;
   }
 
   // ── Emitir el comprobante ────────────────────────────────────────────────
@@ -1640,7 +1704,7 @@ export class CuentaCorrienteService {
     i.comprobanteTipo = c.tipo ?? i.comprobanteTipo;
     i.comprobanteNumero =
       c.numero != null
-        ? `${String(c.puntoVenta ?? 0).padStart(5, '0')}-${String(c.numero).padStart(8, '0')}`
+        ? numeroDeComprobante(c.puntoVenta, c.numero)
         : i.comprobanteNumero;
   }
 

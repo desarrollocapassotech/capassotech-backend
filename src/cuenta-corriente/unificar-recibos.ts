@@ -74,6 +74,30 @@ export function montoDeTexto(texto: string): number | null {
   return limpio && Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * ¿El colaborador confirmó que recibió este pago? El acuse guarda los datos del recibo como texto,
+ * así que se cruza por mes, moneda e importe. Reenviar un recibo genera otro acuse: alcanza con uno.
+ */
+export function reciboConfirmado(
+  acuses: Array<{
+    monthYear: string;
+    total: string;
+    currency: string | null;
+    acknowledgedAt: Date | null;
+  }>,
+  mes: string,
+  total: number,
+  moneda: Moneda,
+): boolean {
+  return acuses.some(
+    (a) =>
+      a.acknowledgedAt &&
+      a.currency === moneda &&
+      mesDeTexto(a.monthYear) === mes &&
+      Math.abs((montoDeTexto(a.total) ?? 0) - total) <= EPS,
+  );
+}
+
 export function unificarRecibos(
   recibos: ReciboEnviado[],
   cargos: CargoColaborador[],
