@@ -138,7 +138,12 @@ export class ClientsService {
       return client;
     }
 
-    const { billableConfig: _billableConfig, ...masked } = client;
+    const {
+      billableConfig: _billableConfig,
+      billingConcepts: _billingConcepts,
+      billingDocument: _billingDocument,
+      ...masked
+    } = client;
     return masked as ClientResponse;
   }
 

@@ -20,7 +20,8 @@ export class CollaboratorEntity {
   workEmail: string | null;
 
   // Legacy: texto plano igual que hoy en Firestore. Ver nota en database/README.md.
-  @Column({ type: 'text', nullable: true })
+  // select: false para que ninguna lectura la traiga y no pueda salir por la API.
+  @Column({ type: 'text', nullable: true, select: false })
   password: string | null;
 
   @Column({ name: 'hourly_rate', type: 'numeric', precision: 12, scale: 2 })
