@@ -2,13 +2,18 @@ import {
   BadRequestException,
   ConflictException,
   HttpException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
+import type { App } from 'firebase-admin/app';
+import { getStorage } from 'firebase-admin/storage';
 import { Between, In, IsNull, Repository } from 'typeorm';
+import { FIREBASE_ADMIN } from '../auth/firebase-admin.provider';
 import { CollaboratorReceiptSenderService } from '../collaborators/collaborator-receipt-sender.service';
 import { CollaboratorReceiptService } from '../collaborators/collaborator-receipt.service';
 import type { GenerateCollaboratorReceiptDto } from '../collaborators/collaborator-receipt.dto';
@@ -57,6 +62,13 @@ import {
   resolverAjuste,
   type AdicionalRecibo,
 } from './calculos';
+import {
+  detectarComprobante,
+  normalizarNumeroComprobante,
+  textoDePdf,
+  tipoComprobanteValido,
+  tipoDeArchivo,
+} from './leer-comprobante';
 import { cuentaParaPortal } from './portal';
 import { reciboConfirmado } from './unificar-recibos';
 
@@ -79,6 +91,43 @@ function sumarDias(ymd: string, dias: number) {
 }
 
 const monedaValida = (v: unknown): v is CcMoneda => v === 'USD' || v === 'ARS';
+
+const CARPETA_ADJUNTOS = 'cuenta-corriente/comprobantes';
+const PATH_ADJUNTO =
+  /^cuenta-corriente\/comprobantes\/[0-9a-f-]{36}\.(pdf|png|jpg)$/;
+const TIPO_POR_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+};
+
+interface AdjuntoValidado {
+  path: string;
+  nombre: string | null;
+  numero: string;
+  tipo: string | null;
+}
+
+/** Comprobante adjunto de un cobro. El número es obligatorio; el archivo, solo uno ya subido. */
+function adjuntoValido(valor: unknown): AdjuntoValidado | null {
+  if (valor === undefined || valor === null) return null;
+  const a = valor as Record<string, unknown>;
+  if (typeof a.path !== 'string' || !PATH_ADJUNTO.test(a.path)) {
+    throw new BadRequestException('Adjuntá el archivo del comprobante.');
+  }
+  const numero = normalizarNumeroComprobante(a.numero);
+  if (!numero) {
+    throw new BadRequestException(
+      'El número de comprobante es obligatorio, con el formato 00001-00000012.',
+    );
+  }
+  return {
+    path: a.path,
+    nombre: typeof a.nombre === 'string' ? a.nombre.slice(0, 200) : null,
+    numero,
+    tipo: tipoComprobanteValido(a.tipo) ? a.tipo : null,
+  };
+}
 
 function importeValido(v: unknown): number {
   const n = Number(v);
@@ -146,6 +195,8 @@ export interface DatosMovimiento {
   cuotas?: unknown;
   /** Pago a un colaborador: horas extra o bonos que se agregan al recibo. `importe` los incluye. */
   adicionales?: unknown;
+  /** Cobro de un cliente: comprobante emitido afuera, en vez de emitir uno desde acá. */
+  adjunto?: unknown;
 }
 
 export interface DatosImputacion {
@@ -156,6 +207,8 @@ export interface DatosImputacion {
   /** false: no se emite comprobante (por ejemplo, el mes ya estaba facturado). */
   emitir?: unknown;
   fechaEmision?: unknown;
+  /** Comprobante emitido afuera: se guarda con la imputación y no se emite nada. */
+  adjunto?: unknown;
 }
 
 @Injectable()
@@ -186,6 +239,7 @@ export class CuentaCorrienteService {
     private readonly tipoDeCambio: ExchangeRateService,
     private readonly recibosColaborador: CollaboratorReceiptService,
     private readonly envioRecibos: CollaboratorReceiptSenderService,
+    @Inject(FIREBASE_ADMIN) private readonly firebaseApp: App,
   ) {}
 
   // ── Mes de arranque ──────────────────────────────────────────────────────
@@ -540,6 +594,7 @@ export class CuentaCorrienteService {
       comprobanteNumero: i.comprobanteNumero,
       comprobanteEstado: i.comprobanteEstado,
       comprobanteError: i.comprobanteError,
+      adjuntoNombre: i.adjuntoNombre,
       fechaEmision: i.fechaEmision,
       deshecha: Boolean(i.reversedAt),
       creadoEn: i.createdAt,
@@ -1163,6 +1218,15 @@ export class CuentaCorrienteService {
       );
     }
     const totalAdicionales = adicionales.reduce((t, a) => t + a.importe, 0);
+    // Antes de guardar el cobro: un comprobante inválido no tiene que dejarlo cargado a medias.
+    if (dto.adjunto !== undefined && dto.adjunto !== null) {
+      if (side !== 'cliente') {
+        throw new BadRequestException(
+          'El comprobante adjunto es para los cobros a clientes.',
+        );
+      }
+      await this.adjuntoDe(dto.adjunto, id);
+    }
     let mov = previo;
     if (!mov) {
       if (Number(dto.importe) < totalAdicionales - EPS) {
@@ -1228,6 +1292,7 @@ export class CuentaCorrienteService {
             tipoCambio: dto.tipoCambio,
             emitir: dto.emitir,
             fechaEmision: dto.fechaEmision,
+            adjunto: dto.adjunto,
           },
           `${clave}-${cargo.id.slice(0, 8)}`,
           email,
@@ -1433,6 +1498,87 @@ export class CuentaCorrienteService {
     return previos;
   }
 
+  // ── Comprobante adjunto ──────────────────────────────────────────────────
+
+  /**
+   * Guarda el archivo y devuelve lo que se pudo leer de él. Una imagen o un PDF escaneado no se
+   * leen: el número se carga a mano. El archivo queda fuera de la imputación hasta guardarla.
+   */
+  async subirComprobante(file: Express.Multer.File | undefined) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Adjuntá el archivo del comprobante.');
+    }
+    const tipo = tipoDeArchivo(file.buffer);
+    if (!tipo) {
+      throw new BadRequestException(
+        'El comprobante tiene que ser PDF, PNG o JPG.',
+      );
+    }
+    const detectado =
+      tipo.extension === 'pdf'
+        ? detectarComprobante(await textoDePdf(file.buffer))
+        : { numero: null, tipo: null };
+    const path = `${CARPETA_ADJUNTOS}/${randomUUID()}.${tipo.extension}`;
+    // Sin token de descarga: el archivo no tiene URL pública.
+    await getStorage(this.firebaseApp)
+      .bucket()
+      .file(path)
+      .save(file.buffer, { contentType: tipo.contentType });
+    return {
+      path,
+      // multer entrega el nombre en latin1.
+      nombre: Buffer.from(file.originalname, 'latin1').toString('utf8'),
+      ...detectado,
+    };
+  }
+
+  /** El adjunto de un cobro, validado. Un mismo número no puede estar en la cuenta de otro cliente. */
+  private async adjuntoDe(valor: unknown, clienteId: string | null) {
+    const adjunto = adjuntoValido(valor);
+    if (!adjunto) return null;
+    const mismoNumero = (
+      await this.imputaciones.findBy({
+        comprobanteNumero: adjunto.numero,
+        reversedAt: IsNull(),
+      })
+    ).filter(
+      (i) =>
+        !i.comprobanteTipo ||
+        !adjunto.tipo ||
+        i.comprobanteTipo === adjunto.tipo,
+    );
+    if (mismoNumero.length) {
+      const cargos = await this.movimientos.findBy({
+        id: In(mismoNumero.map((i) => i.cargoId)),
+      });
+      if (cargos.some((c) => c.clientId !== clienteId)) {
+        throw new ConflictException(
+          `El comprobante ${adjunto.numero} ya está cargado en la cuenta de otro cliente.`,
+        );
+      }
+    }
+    return adjunto;
+  }
+
+  async archivoAdjunto(id: string) {
+    const i = await this.cargarImputacion(id);
+    if (!i.adjuntoPath) {
+      throw new NotFoundException(
+        'Esa imputación no tiene comprobante adjunto.',
+      );
+    }
+    const [buffer] = await getStorage(this.firebaseApp)
+      .bucket()
+      .file(i.adjuntoPath)
+      .download();
+    return {
+      buffer,
+      tipo:
+        TIPO_POR_EXTENSION[i.adjuntoPath.split('.').pop() ?? ''] ??
+        'application/octet-stream',
+    };
+  }
+
   async imputar(dto: DatosImputacion, clave: string, email?: string) {
     const previa = await this.imputaciones.findOneBy({ idempotencyKey: clave });
     if (previa) return this.emitirSiFalta(previa, email);
@@ -1451,6 +1597,12 @@ export class CuentaCorrienteService {
 
     const cargoInicial = await this.movimientos.findOneBy({ id: cargoId });
     if (!cargoInicial) throw new NotFoundException('Cargo no encontrado.');
+    if (dto.adjunto && cargoInicial.side !== 'cliente') {
+      throw new BadRequestException(
+        'El comprobante adjunto es para los cobros a clientes.',
+      );
+    }
+    const adjunto = await this.adjuntoDe(dto.adjunto, cargoInicial.clientId);
     // El TC del mes pudo haberse fijado recién: el cargo tiene que estar al día antes de imputar.
     if (cargoInicial.origen === 'mes') {
       const { mesInicio } = await this.obtenerConfig();
@@ -1516,10 +1668,16 @@ export class CuentaCorrienteService {
         );
 
         // Hace falta TC si pago y cargo difieren, o para pasar a pesos una factura de un pago en USD.
-        const documento = await this.documentoDe(
-          cargo,
-          emitirPedido && pago.origen !== 'saldo_inicial',
-        );
+        // Con su factura previa, el cargo no suma otro comprobante, tampoco uno adjunto.
+        const adjuntoDelCargo = cargo.comprobantesPrevios?.length
+          ? null
+          : adjunto;
+        const documento = adjuntoDelCargo
+          ? ('adjunto' as const)
+          : await this.documentoDe(
+              cargo,
+              emitirPedido && !adjunto && pago.origen !== 'saldo_inicial',
+            );
         const requiereTc =
           pago.currency !== cargo.currency ||
           (documento === 'factura' && pago.currency === 'USD');
@@ -1550,7 +1708,16 @@ export class CuentaCorrienteService {
             paymentAmount: calculo.importePago.toFixed(2),
             exchangeRate: tc != null ? tc.toFixed(4) : null,
             documento,
-            comprobanteEstado: documento ? 'PENDIENTE' : null,
+            // Un adjunto ya está emitido: no pasa por emitirSiFalta, y deshacerlo no anula nada.
+            comprobanteEstado: adjuntoDelCargo
+              ? 'EMITIDO'
+              : documento
+                ? 'PENDIENTE'
+                : null,
+            comprobanteTipo: adjuntoDelCargo?.tipo ?? null,
+            comprobanteNumero: adjuntoDelCargo?.numero ?? null,
+            adjuntoPath: adjuntoDelCargo?.path ?? null,
+            adjuntoNombre: adjuntoDelCargo?.nombre ?? null,
             fechaEmision: documento ? fechaEmision : null,
             idempotencyKey: clave,
             createdBy: email ?? null,

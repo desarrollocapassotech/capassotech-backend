@@ -9,7 +9,7 @@ interface ImputacionCuenta {
   importePago: number;
   monedaCargo?: string;
   monedaPago?: string;
-  documento: 'factura' | 'recibo' | null;
+  documento: 'factura' | 'recibo' | 'adjunto' | null;
   comprobanteTipo: string | null;
   comprobanteNumero: string | null;
   comprobanteEstado: string | null;

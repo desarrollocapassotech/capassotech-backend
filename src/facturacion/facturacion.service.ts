@@ -598,7 +598,7 @@ export class FacturacionService {
       pdf,
       clienteId: entidad.id,
       fecha,
-      moneda: moneda as 'USD' | 'ARS',
+      moneda: moneda,
       total: pesos(total),
     };
   }

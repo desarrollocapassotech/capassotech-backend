@@ -196,9 +196,13 @@ describe('facturas hechas por fuera', () => {
   it('una factura anulada ya no está vigente', () => {
     expect(facturaVigente(c)).toBe(true);
     expect(facturaVigente({ ...c, estado: 'ANULADO' })).toBe(false);
-    expect(facturaVigente({ ...c, notas: [{ estado: 'EMITIDO' }] })).toBe(false);
+    expect(facturaVigente({ ...c, notas: [{ estado: 'EMITIDO' }] })).toBe(
+      false,
+    );
     // Una nota rechazada no anuló nada.
-    expect(facturaVigente({ ...c, notas: [{ estado: 'RECHAZADO' }] })).toBe(true);
+    expect(facturaVigente({ ...c, notas: [{ estado: 'RECHAZADO' }] })).toBe(
+      true,
+    );
   });
   it('guarda lo que hace falta para mostrarla', () => {
     expect(comprobantePrevioDe(c)).toEqual({

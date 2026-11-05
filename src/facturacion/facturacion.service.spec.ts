@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return --
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return --
    El Facturador falso trabaja con cuerpos JSON sin tipar. */
 import { HttpException, UnprocessableEntityException } from '@nestjs/common';
 import type { Repository } from 'typeorm';
@@ -437,9 +437,9 @@ describe('FacturacionService', () => {
       EMAIL,
     );
 
-    await expect(s.anular('manual1', '  ', 'clave-anular', EMAIL)).rejects.toThrow(
-      'motivo',
-    );
+    await expect(
+      s.anular('manual1', '  ', 'clave-anular', EMAIL),
+    ).rejects.toThrow('motivo');
     f.cortarAlEmitir(new Error('Se cortó'));
     await expect(
       s.anular('manual1', 'Horas de más', 'clave-anular', EMAIL),

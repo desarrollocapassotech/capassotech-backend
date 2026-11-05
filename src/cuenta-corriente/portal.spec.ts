@@ -105,6 +105,22 @@ describe('cuentaParaPortal', () => {
     expect(conEstado({ documento: null })).toEqual([]);
   });
 
+  it('del comprobante adjunto muestra tipo y número, nunca el archivo', () => {
+    const adjunta = {
+      ...imputacion,
+      documento: 'adjunto' as const,
+      adjuntoNombre: 'privado.pdf',
+    };
+    const r = cuentaParaPortal({
+      ...cuenta,
+      movimientos: [{ ...movimiento, imputaciones: [adjunta] }],
+    });
+    expect(r.movimientos[0].comprobantes).toEqual([
+      { documento: 'adjunto', tipo: 'FACTURA_C', numero: '00001-00000012' },
+    ]);
+    expect(JSON.stringify(r)).not.toContain('privado.pdf');
+  });
+
   it('muestra la factura hecha por fuera, salvo que sea de prueba, y sin su id', () => {
     const previa = {
       comprobanteId: 'interno-2',
