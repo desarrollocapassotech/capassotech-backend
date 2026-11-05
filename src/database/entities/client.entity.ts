@@ -71,7 +71,8 @@ export class ClientEntity {
   ivaCondition: string | null;
 
   // Legacy: texto plano igual que hoy en Firestore. Ver nota en database/README.md.
-  @Column({ type: 'text', nullable: true })
+  // select: false para que ninguna lectura la traiga y no pueda salir por la API.
+  @Column({ type: 'text', nullable: true, select: false })
   password: string | null;
 
   @Column({

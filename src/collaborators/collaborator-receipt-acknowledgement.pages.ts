@@ -1,6 +1,10 @@
 import { escapeHtml, LOGO_URL } from '../common/email-template.util';
 import type { CollaboratorReceiptAcknowledgementEntity } from '../database/entities';
-import { RECEIPT_ACK_BUTTON_COLOR, RECEIPT_ACK_BUTTON_LABEL } from './collaborator-receipt-email.template';
+import {
+  RECEIPT_ACK_BUTTON_COLOR,
+  RECEIPT_ACK_BUTTON_EDGE_COLOR,
+  RECEIPT_ACK_BUTTON_LABEL,
+} from './collaborator-receipt-email.template';
 
 function buildPage(content: string): string {
   return `<!doctype html>
@@ -37,7 +41,7 @@ export function buildConfirmPage(record: CollaboratorReceiptAcknowledgementEntit
     <p style="margin:0 0 24px; font-size:15px; line-height:22px; color:#6b7280;">Confirmá que ya recibiste el dinero de este recibo.</p>
     ${buildReceiptSummary(record)}
     <form method="post" style="margin:0;">
-      <button type="submit" style="width:100%; padding:18px 24px; border:0; border-radius:10px; background-color:${RECEIPT_ACK_BUTTON_COLOR}; color:#ffffff; font-size:18px; font-weight:700; cursor:pointer;">${RECEIPT_ACK_BUTTON_LABEL}</button>
+      <button type="submit" style="padding:16px 32px; border:0; border-bottom:4px solid ${RECEIPT_ACK_BUTTON_EDGE_COLOR}; border-radius:10px; box-shadow:0 4px 10px rgba(21,128,61,0.35); background-color:${RECEIPT_ACK_BUTTON_COLOR}; color:#ffffff; font-size:18px; font-weight:700; cursor:pointer;">${RECEIPT_ACK_BUTTON_LABEL}</button>
     </form>`);
 }
 
