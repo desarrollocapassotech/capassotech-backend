@@ -25,5 +25,6 @@ import { FacturacionService } from './facturacion.service';
   ],
   controllers: [FacturacionController],
   providers: [FacturacionService],
+  exports: [FacturacionService],
 })
 export class FacturacionModule {}
