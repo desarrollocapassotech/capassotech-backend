@@ -236,9 +236,16 @@ export class CcImputationEntity {
   @Column({ name: 'recibo_de', type: 'uuid', nullable: true })
   reciboDe: string | null;
 
-  /** null: la imputación no emite comprobante (ya estaba facturado). */
+  /** null: sin comprobante propio (ya estaba facturado). adjunto: emitido afuera, no lo emite el tracker. */
   @Column({ type: 'text', nullable: true })
-  documento: 'factura' | 'recibo' | null;
+  documento: 'factura' | 'recibo' | 'adjunto' | null;
+
+  /** Dónde está el archivo del comprobante adjunto. No es público: se baja por el backend. */
+  @Column({ name: 'adjunto_path', type: 'text', nullable: true })
+  adjuntoPath: string | null;
+
+  @Column({ name: 'adjunto_nombre', type: 'text', nullable: true })
+  adjuntoNombre: string | null;
 
   @Column({ name: 'comprobante_id', type: 'text', nullable: true })
   comprobanteId: string | null;

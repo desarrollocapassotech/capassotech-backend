@@ -13,8 +13,11 @@ import {
   Put,
   Query,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { UserRole } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -134,6 +137,23 @@ export class CuentaCorrienteController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.cc.sincronizarComprobantesPrevios(id, u.email);
+  }
+
+  /** Guarda el comprobante emitido afuera y devuelve el número que se pudo leer. */
+  @Post('comprobantes-adjuntos')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  subirComprobante(@UploadedFile() file: Express.Multer.File) {
+    return this.cc.subirComprobante(file);
+  }
+
+  @Get('imputaciones/:id/adjunto')
+  async adjunto(@Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
+    const r = await this.cc.archivoAdjunto(id);
+    res.setHeader('Content-Type', r.tipo);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(r.buffer);
   }
 
   @Post('imputaciones')
