@@ -7,6 +7,9 @@ export interface QuarterMetricDto {
   revenueUsd: number;
   costUsd: number;
   marginUsd: number;
+  revenueArs: number;
+  costArs: number;
+  marginArs: number;
   outlierTaskCount: number;
 }
 

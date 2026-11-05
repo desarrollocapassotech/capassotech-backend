@@ -199,6 +199,9 @@ export class CollaboratorPerformanceService {
         revenueUsd: 0,
         costUsd: 0,
         marginUsd: 0,
+        revenueArs: 0,
+        costArs: 0,
+        marginArs: 0,
         outlierTaskCount: 0,
       });
     }
@@ -219,13 +222,21 @@ export class CollaboratorPerformanceService {
     const monthlyTotalsByKey = await this.loadMonthlyProjectTotals(monthlyProjectIds, windowStart, windowEnd);
 
     const usdRateCache = new Map<string, number>();
-    const toUsd = async (amount: number, currency: BillingCurrency | null, month: string): Promise<number> => {
-      if (currency !== BillingCurrency.ARS) return amount;
+    const rateForMonth = async (month: string): Promise<number> => {
       if (!usdRateCache.has(month)) {
         const { rate } = await this.exchangeRateService.getUsdRate(month);
         usdRateCache.set(month, rate);
       }
-      return amount / usdRateCache.get(month)!;
+      return usdRateCache.get(month)!;
+    };
+    const toUsd = async (amount: number, currency: BillingCurrency | null, month: string): Promise<number> => {
+      if (currency !== BillingCurrency.ARS) return amount;
+      return amount / (await rateForMonth(month));
+    };
+    // Mes a mes, no el total del trimestre por un solo TC: cada mes puede tener el suyo.
+    const toArs = async (amount: number, currency: BillingCurrency | null, month: string): Promise<number> => {
+      if (currency === BillingCurrency.ARS) return amount;
+      return amount * (await rateForMonth(month));
     };
 
     for (const entry of entries) {
@@ -239,6 +250,7 @@ export class CollaboratorPerformanceService {
 
       const collaboratorRate = overrideByProject.get(entry.projectId) ?? Number(collaborator.hourlyRate);
       const costUsd = await toUsd(hours * collaboratorRate, collaborator.currency, month);
+      const costArs = await toArs(hours * collaboratorRate, collaborator.currency, month);
 
       let revenueLocal = 0;
       if (project.billingType === ProjectBillingType.MONTHLY) {
@@ -249,18 +261,25 @@ export class CollaboratorPerformanceService {
         revenueLocal = hours * Number(project.rate ?? 0);
       }
       const revenueUsd = await toUsd(revenueLocal, project.currency, month);
+      const revenueArs = await toArs(revenueLocal, project.currency, month);
 
       bucket.hours += hours;
       bucket.costUsd += costUsd;
       bucket.revenueUsd += revenueUsd;
+      bucket.costArs += costArs;
+      bucket.revenueArs += revenueArs;
     }
 
     for (const bucket of buckets.values()) {
       bucket.marginUsd = bucket.revenueUsd - bucket.costUsd;
+      bucket.marginArs = bucket.revenueArs - bucket.costArs;
       bucket.hours = Math.round(bucket.hours * 100) / 100;
       bucket.costUsd = Math.round(bucket.costUsd * 100) / 100;
       bucket.revenueUsd = Math.round(bucket.revenueUsd * 100) / 100;
       bucket.marginUsd = Math.round(bucket.marginUsd * 100) / 100;
+      bucket.costArs = Math.round(bucket.costArs * 100) / 100;
+      bucket.revenueArs = Math.round(bucket.revenueArs * 100) / 100;
+      bucket.marginArs = Math.round(bucket.marginArs * 100) / 100;
     }
 
     return [...buckets.values()];
