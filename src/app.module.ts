@@ -12,7 +12,6 @@ import { ExchangeRateModule } from './exchange-rate/exchange-rate.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { HealthModule } from './health/health.module';
 import { HoursAlertsModule } from './hours-alerts/hours-alerts.module';
-import { IncomeModule } from './income/income.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { CuentaCorrienteModule } from './cuenta-corriente/cuenta-corriente.module';
 import { FacturacionModule } from './facturacion/facturacion.module';
@@ -36,7 +35,6 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     ExpensesModule,
     HealthModule,
     HoursAlertsModule,
-    IncomeModule,
     IntegrationsModule,
     FacturacionModule,
     CuentaCorrienteModule,

@@ -171,6 +171,37 @@ export function mesesCerrados(desde: string, hoy: string): string[] {
   }
 }
 
+/** Fecha de la cuota `numero` (desde 1): mismo día de cada mes, o el último si ese mes no lo tiene. */
+export function fechaDeCuota(primera: string, numero: number): string {
+  const [a, m, d] = primera.split('-').map(Number);
+  const ultimoDia = new Date(Date.UTC(a, m - 1 + numero, 0)).getUTCDate();
+  return new Date(Date.UTC(a, m - 2 + numero, Math.min(d, ultimoDia)))
+    .toISOString()
+    .slice(0, 10);
+}
+
+export const conceptoDeCuota = (
+  numero: number,
+  total: number,
+  concepto: string,
+) => `Cuota ${numero}/${total} ${concepto}`;
+
+/** Cuotas de un plan que ya llegaron a su fecha y todavía no existen. */
+export function cuotasAGenerar(
+  plan: { totalCuotas: number; firstDate: string },
+  existentes: number[],
+  hoy: string,
+): Array<{ numero: number; fecha: string }> {
+  const resultado: Array<{ numero: number; fecha: string }> = [];
+  for (let numero = 1; numero <= plan.totalCuotas; numero += 1) {
+    const fecha = fechaDeCuota(plan.firstDate, numero);
+    if (fecha <= hoy && !existentes.includes(numero)) {
+      resultado.push({ numero, fecha });
+    }
+  }
+  return resultado;
+}
+
 export interface AjusteActual {
   id: string;
   /** Con signo: cargo suma, crédito resta. */

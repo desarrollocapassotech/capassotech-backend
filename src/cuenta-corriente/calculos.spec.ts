@@ -1,7 +1,10 @@
 import {
   calcularImputacion,
   calcularSaldos,
+  conceptoDeCuota,
   convertir,
+  cuotasAGenerar,
+  fechaDeCuota,
   lineasDelComprobante,
   mesesCerrados,
   netoDeTotal,
@@ -153,6 +156,38 @@ describe('mesesCerrados', () => {
   });
   it('arrancar en el mes actual no genera nada', () => {
     expect(mesesCerrados('2026-11', '2026-11-05')).toEqual([]);
+  });
+});
+
+describe('cuotas', () => {
+  it('caen el mismo día de cada mes, y cruzan el año', () => {
+    expect(fechaDeCuota('2026-10-05', 1)).toBe('2026-10-05');
+    expect(fechaDeCuota('2026-10-05', 3)).toBe('2026-12-05');
+    expect(fechaDeCuota('2026-12-05', 2)).toBe('2027-01-05');
+  });
+  it('un mes más corto usa su último día, sin correr las siguientes', () => {
+    expect(fechaDeCuota('2026-01-31', 2)).toBe('2026-02-28');
+    expect(fechaDeCuota('2026-01-31', 3)).toBe('2026-03-31');
+  });
+  const plan = { totalCuotas: 3, firstDate: '2026-10-05' };
+  it('la 3/3 de EPEFI aparece recién el 05/12', () => {
+    expect(cuotasAGenerar(plan, [1, 2], '2026-12-04')).toEqual([]);
+    expect(cuotasAGenerar(plan, [1, 2], '2026-12-05')).toEqual([
+      { numero: 3, fecha: '2026-12-05' },
+    ]);
+  });
+  it('no repite las que ya existen ni se pasa del total', () => {
+    expect(cuotasAGenerar(plan, [1, 2, 3], '2030-01-01')).toEqual([]);
+  });
+  it('genera las atrasadas si nadie abrió la cuenta', () => {
+    expect(cuotasAGenerar(plan, [], '2026-11-20').map((c) => c.numero)).toEqual(
+      [1, 2],
+    );
+  });
+  it('arma el concepto', () => {
+    expect(conceptoDeCuota(3, 3, 'módulo de exámenes')).toBe(
+      'Cuota 3/3 módulo de exámenes',
+    );
   });
 });
 
