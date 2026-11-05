@@ -59,6 +59,11 @@ export class CuentaCorrienteController {
     return this.cc.guardarConfig(body?.mesInicio, u.email);
   }
 
+  @Get('cuentas/:side')
+  cuentas(@Param('side') side: string) {
+    return this.cc.listarCuentas(side);
+  }
+
   @Get('cuentas/:side/:id')
   cuenta(@Param('side') side: string, @Param('id') id: string) {
     return this.cc.cuenta(side, id);

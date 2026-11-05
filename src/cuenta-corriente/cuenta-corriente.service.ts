@@ -8,7 +8,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, In, Repository } from 'typeorm';
+import { Between, In, IsNull, Repository } from 'typeorm';
 import { CollaboratorReceiptSenderService } from '../collaborators/collaborator-receipt-sender.service';
 import { CollaboratorReceiptService } from '../collaborators/collaborator-receipt.service';
 import type { GenerateCollaboratorReceiptDto } from '../collaborators/collaborator-receipt.dto';
@@ -90,6 +90,30 @@ function tcOpcional(v: unknown): number | undefined {
     throw new BadRequestException('El tipo de cambio no es válido.');
   }
   return n;
+}
+
+interface CargoCalculado {
+  moneda: CcMoneda;
+  importe: number;
+  detalle: CcDetalle;
+}
+
+/**
+ * Postgres no conserva el orden de las claves de un jsonb: comparar el texto daría siempre
+ * distinto, y cada carga del listado reescribiría todos los cargos.
+ */
+function mismoDetalle(a: CcDetalle | null, b: CcDetalle) {
+  const normal = (d: CcDetalle | null) =>
+    JSON.stringify([
+      d?.horasFacturables ?? 0,
+      (d?.lineas ?? []).map((l) => [
+        l.descripcion,
+        l.cantidad,
+        l.importe,
+        l.referencia ?? null,
+      ]),
+    ]);
+  return normal(a) === normal(b);
 }
 
 export interface DatosMovimiento {
@@ -217,6 +241,93 @@ export class CuentaCorrienteService {
 
   private dondeCuenta(side: CcSide, id: string) {
     return side === 'cliente' ? { clientId: id } : { collaboratorId: id };
+  }
+
+  /** Todas las cuentas de un lado con su saldo por moneda, para el listado de la pantalla. */
+  async listarCuentas(sideRaw: unknown) {
+    if (sideRaw !== 'cliente' && sideRaw !== 'colaborador') {
+      throw new BadRequestException('side debe ser cliente o colaborador.');
+    }
+    const side: CcSide = sideRaw;
+    const { mesInicio } = await this.obtenerConfig();
+    const advertencias = mesInicio
+      ? await this.generarCargosDelLado(side, mesInicio)
+      : [];
+
+    const movimientos = await this.movimientos.findBy({ side });
+    const ids = movimientos.map((m) => m.id);
+    const imputaciones = ids.length
+      ? await this.imputaciones.findBy({
+          pagoId: In(ids),
+          reversedAt: IsNull(),
+        })
+      : [];
+    const porId = new Map(movimientos.map((m) => [m.id, m]));
+    const cuentaDe = (m: CcMovementEntity) =>
+      (m.clientId ?? m.collaboratorId) as string;
+    const saldosDe = (cuentaId: string) => {
+      const propios = movimientos.filter((m) => cuentaDe(m) === cuentaId);
+      const pagos = new Set(propios.map((m) => m.id));
+      const { finales } = calcularSaldos(
+        propios.map((m) => ({
+          id: m.id,
+          tipo: m.tipo,
+          importe: Number(m.amount),
+          moneda: m.currency,
+          fecha: m.date,
+          creado: m.createdAt.getTime(),
+        })),
+        imputaciones
+          .filter((i) => pagos.has(i.pagoId))
+          .map((i) => ({
+            pagoId: i.pagoId,
+            importeCargo: Number(i.amount),
+            importePago: Number(i.paymentAmount),
+            monedaCargo: porId.get(i.cargoId)!.currency,
+            monedaPago: porId.get(i.pagoId)!.currency,
+          })),
+      );
+      return Object.entries(finales)
+        .filter(([, saldo]) => Math.abs(saldo) > EPS)
+        .map(([moneda, saldo]) => ({ moneda, saldo }));
+    };
+
+    const conMovimientos = new Set(movimientos.map(cuentaDe));
+    const cuentas: Array<{
+      id: string;
+      nombre: string;
+      razonSocial: string | null;
+      cuit: string | null;
+    }> =
+      side === 'cliente'
+        ? (await this.clientes.find()).map((c) => {
+            const d = datosCliente(c);
+            return {
+              id: c.id,
+              nombre: c.name,
+              razonSocial: d.razonSocial,
+              cuit: d.cuit,
+            };
+          })
+        : (await this.colaboradores.find())
+            // Un colaborador que ya no está solo aparece si tiene algo en su cuenta.
+            .filter((c) => c.active || conMovimientos.has(c.id))
+            .map((c) => ({
+              id: c.id,
+              nombre: c.name,
+              razonSocial: null,
+              cuit: null,
+            }));
+
+    const tcHoy = await this.tipoDeCambio.getUsdRate(
+      hoyArgentina().slice(0, 7),
+    );
+    return {
+      mesInicio,
+      advertencias,
+      tcHoy: { valor: tcHoy.rate, fijado: tcHoy.locked },
+      cuentas: cuentas.map((c) => ({ ...c, saldos: saldosDe(c.id) })),
+    };
   }
 
   /** Movimientos de la cuenta, con imputaciones, pendientes y saldo por moneda. */
@@ -384,10 +495,28 @@ export class CuentaCorrienteService {
     const advertencias: string[] = [];
     for (const mes of mesesCerrados(mesInicio, hoyArgentina())) {
       try {
-        const calculados =
-          side === 'cliente'
-            ? await this.calcularCargosCliente(id, mes)
-            : await this.calcularCargosColaborador(id, mes);
+        let calculados: CargoCalculado[];
+        if (side === 'cliente') {
+          const [r, entidad] = await Promise.all([
+            this.facturacion.calcular(mes),
+            this.clientes.findOneByOrFail({ id }),
+          ]);
+          calculados = this.calcularCargosCliente(entidad, r);
+        } else {
+          const { desde, hasta } = rangoMes(mes);
+          const [colaborador, entradas, overrides] = await Promise.all([
+            this.colaboradores.findOneByOrFail({ id }),
+            this.horas.find({
+              where: { collaboratorId: id, date: Between(desde, hasta) },
+            }),
+            this.tarifas.findBy({ collaboratorId: id }),
+          ]);
+          calculados = this.calcularCargosColaborador(
+            colaborador,
+            entradas,
+            overrides,
+          );
+        }
         await this.aplicarCargos(side, id, mes, calculados);
       } catch (err) {
         this.logger.warn(
@@ -401,8 +530,100 @@ export class CuentaCorrienteService {
     return advertencias;
   }
 
-  private async calcularCargosCliente(clienteId: string, mes: string) {
+  /**
+   * Lo mismo para todas las cuentas de un lado, para el listado con saldos: cada mes se calcula
+   * una sola vez y lo existente se trae de una, así no hay consultas por cuenta si nada cambió.
+   */
+  private async generarCargosDelLado(
+    side: CcSide,
+    mesInicio: string,
+  ): Promise<string[]> {
+    const advertencias: string[] = [];
+    const meses = mesesCerrados(mesInicio, hoyArgentina());
+    if (!meses.length) return advertencias;
+
+    const existentes = await this.movimientos.findBy({ side, origen: 'mes' });
+    const cargoIds = existentes.map((m) => m.id);
+    const imputados = cargoIds.length
+      ? await this.imputaciones.findBy({ cargoId: In(cargoIds) })
+      : [];
+    const conImputaciones = new Set(imputados.map((i) => i.cargoId));
+    const clientes = side === 'cliente' ? await this.clientes.find() : [];
+    const colaboradores =
+      side === 'colaborador' ? await this.colaboradores.find() : [];
+    const overrides = side === 'colaborador' ? await this.tarifas.find() : [];
+    const cuentaDe = (m: CcMovementEntity) => m.clientId ?? m.collaboratorId;
+
+    for (const mes of meses) {
+      try {
+        const calcular =
+          side === 'cliente'
+            ? await this.calculadorDeClientes(mes, clientes)
+            : await this.calculadorDeColaboradores(
+                mes,
+                colaboradores,
+                overrides,
+              );
+        const delMes = existentes.filter((m) => m.month === mes);
+        for (const id of [
+          ...clientes.map((c) => c.id),
+          ...colaboradores.map((c) => c.id),
+        ]) {
+          try {
+            await this.aplicarCargos(side, id, mes, calcular(id), {
+              existentes: delMes.filter((m) => cuentaDe(m) === id),
+              conImputaciones,
+            });
+          } catch (err) {
+            this.logger.warn(
+              `No se pudo generar el cargo de ${mes} (${side} ${id}): ${(err as Error).message}`,
+            );
+            advertencias.push(
+              `No se pudo actualizar una cuenta en ${nombreMes(mes)}: ${(err as Error).message}`,
+            );
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `No se pudo calcular ${mes} (${side}): ${(err as Error).message}`,
+        );
+        advertencias.push(
+          `No se pudo calcular ${nombreMes(mes)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return [...new Set(advertencias)];
+  }
+
+  private async calculadorDeClientes(mes: string, clientes: ClientEntity[]) {
     const r = await this.facturacion.calcular(mes);
+    const porId = new Map(clientes.map((c) => [c.id, c]));
+    return (id: string) => this.calcularCargosCliente(porId.get(id)!, r);
+  }
+
+  private async calculadorDeColaboradores(
+    mes: string,
+    colaboradores: CollaboratorEntity[],
+    overrides: CollaboratorProjectRateEntity[],
+  ) {
+    const { desde, hasta } = rangoMes(mes);
+    const entradas = await this.horas.find({
+      where: { date: Between(desde, hasta) },
+    });
+    const porId = new Map(colaboradores.map((c) => [c.id, c]));
+    return (id: string) =>
+      this.calcularCargosColaborador(
+        porId.get(id)!,
+        entradas.filter((e) => e.collaboratorId === id),
+        overrides.filter((o) => o.collaboratorId === id),
+      );
+  }
+
+  private calcularCargosCliente(
+    entidad: ClientEntity,
+    r: Awaited<ReturnType<FacturacionService['calcular']>>,
+  ): CargoCalculado[] {
+    const clienteId = entidad.id;
     const porMoneda = new Map<
       CcMoneda,
       { lineas: CcLineaDetalle[]; horas: number }
@@ -427,18 +648,15 @@ export class CuentaCorrienteService {
       }
     }
     // Los conceptos fijos están en pesos si se le factura; en la moneda del cliente si es recibo.
-    const entidad = await this.clientes.findOneBy({ id: clienteId });
-    if (entidad) {
-      const c = datosCliente(entidad);
-      for (const concepto of c.conceptos) {
-        grupo(c.documento === 'recibo' ? c.moneda : 'ARS').lineas.push({
-          descripcion: concepto.descripcion,
-          cantidad: concepto.cantidad,
-          importe: redondear(
-            Number(concepto.cantidad) * Number(concepto.precioUnitario),
-          ),
-        });
-      }
+    const c = datosCliente(entidad);
+    for (const concepto of c.conceptos) {
+      grupo(c.documento === 'recibo' ? c.moneda : 'ARS').lineas.push({
+        descripcion: concepto.descripcion,
+        cantidad: concepto.cantidad,
+        importe: redondear(
+          Number(concepto.cantidad) * Number(concepto.precioUnitario),
+        ),
+      });
     }
     return [...porMoneda].map(([moneda, g]) => ({
       moneda,
@@ -448,20 +666,11 @@ export class CuentaCorrienteService {
   }
 
   /** Lo mismo que arma el recibo del colaborador: horas del mes × valor hora, por proyecto. */
-  private async calcularCargosColaborador(colaboradorId: string, mes: string) {
-    const colaborador = await this.colaboradores.findOneByOrFail({
-      id: colaboradorId,
-    });
-    const { desde, hasta } = rangoMes(mes);
-    const [entradas, overrides] = await Promise.all([
-      this.horas.find({
-        where: {
-          collaboratorId: colaboradorId,
-          date: Between(desde, hasta),
-        },
-      }),
-      this.tarifas.findBy({ collaboratorId: colaboradorId }),
-    ]);
+  private calcularCargosColaborador(
+    colaborador: CollaboratorEntity,
+    entradas: TimeEntryEntity[],
+    overrides: CollaboratorProjectRateEntity[],
+  ): CargoCalculado[] {
     const porProyecto = new Map<
       string,
       { nombre: string; horas: number; tarifa: number }
@@ -493,7 +702,7 @@ export class CuentaCorrienteService {
       {
         moneda,
         importe: redondear(lineas.reduce((t, l) => t + l.importe, 0)),
-        detalle: { lineas } as CcDetalle,
+        detalle: { lineas },
       },
     ];
   }
@@ -502,16 +711,19 @@ export class CuentaCorrienteService {
     side: CcSide,
     cuentaId: string,
     mes: string,
-    calculados: Array<{
-      moneda: CcMoneda;
-      importe: number;
-      detalle: CcDetalle;
-    }>,
+    calculados: CargoCalculado[],
+    /** Ya cargado por quien genera en lote: sin esto, se consulta por cuenta. */
+    previo?: {
+      existentes: CcMovementEntity[];
+      conImputaciones: Set<string>;
+    },
   ) {
     const donde = this.dondeCuenta(side, cuentaId);
-    const existentes = await this.movimientos.find({
-      where: { ...donde, origen: 'mes', month: mes },
-    });
+    const existentes =
+      previo?.existentes ??
+      (await this.movimientos.find({
+        where: { ...donde, origen: 'mes', month: mes },
+      }));
     const monedas = new Set<CcMoneda>([
       ...calculados.map((c) => c.moneda),
       ...existentes.flatMap((e) =>
@@ -527,27 +739,33 @@ export class CuentaCorrienteService {
 
       if (!existente) {
         if (importe <= EPS) continue;
-        await this.movimientos.insert({
-          side,
-          ...donde,
-          tipo: 'cargo',
-          origen: 'mes',
-          month: mes,
-          concept: `${side === 'cliente' ? 'Servicios' : 'Honorarios'} ${nombreMes(mes)}`,
-          amount: importe.toFixed(2),
-          currency: moneda,
-          sourceCurrency: moneda,
-          sourceAmount: importe.toFixed(2),
-          date: hasta,
-          dueDate: sumarDias(hasta, DIAS_VENCIMIENTO),
-          detail: calculado!.detalle,
-        });
+        // orIgnore: si dos pedidos generan a la vez, el índice único deja uno solo y no falla.
+        await this.movimientos
+          .createQueryBuilder()
+          .insert()
+          .values({
+            side,
+            ...donde,
+            tipo: 'cargo',
+            origen: 'mes',
+            month: mes,
+            concept: `${side === 'cliente' ? 'Servicios' : 'Honorarios'} ${nombreMes(mes)}`,
+            amount: importe.toFixed(2),
+            currency: moneda,
+            sourceCurrency: moneda,
+            sourceAmount: importe.toFixed(2),
+            date: hasta,
+            dueDate: sumarDias(hasta, DIAS_VENCIMIENTO),
+            detail: calculado!.detalle,
+          })
+          .orIgnore()
+          .execute();
         continue;
       }
 
-      const conImputaciones = await this.imputaciones.existsBy({
-        cargoId: existente.id,
-      });
+      const conImputaciones = previo
+        ? previo.conImputaciones.has(existente.id)
+        : await this.imputaciones.existsBy({ cargoId: existente.id });
       if (!conImputaciones) {
         if (importe <= EPS) {
           await this.movimientos.delete({ id: existente.id });
@@ -561,8 +779,7 @@ export class CuentaCorrienteService {
         );
         if (
           Math.abs(esperado - Number(existente.amount)) > EPS ||
-          JSON.stringify(existente.detail) !==
-            JSON.stringify(calculado!.detalle)
+          !mismoDetalle(existente.detail, calculado!.detalle)
         ) {
           await this.movimientos.update(
             { id: existente.id },
