@@ -4,7 +4,6 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
-import { ClientPaymentsModule } from './client-payments/client-payments.module';
 import { ClientsModule } from './clients/clients.module';
 import { CollaboratorsModule } from './collaborators/collaborators.module';
 import { CollaboratorPerformanceModule } from './collaborator-performance/collaborator-performance.module';
@@ -33,7 +32,6 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     CollaboratorsModule,
     CollaboratorPerformanceModule,
     ClientsModule,
-    ClientPaymentsModule,
     ExchangeRateModule,
     ExpensesModule,
     HealthModule,

@@ -1,7 +1,6 @@
 import { AppUserEntity } from './app-user.entity';
 import { ClientFunctionalAnalystEntity } from './client-functional-analyst.entity';
 import { ClientHoursAlertEntity } from './client-hours-alert.entity';
-import { ClientPaymentEntity } from './client-payment.entity';
 import { ClientReceiptEntity } from './client-receipt.entity';
 import { ClientEntity } from './client.entity';
 import { CollaboratorEntity } from './collaborator.entity';
@@ -30,7 +29,6 @@ import { TicketStateEntity } from './ticket-state.entity';
 export * from './app-user.entity';
 export * from './client-functional-analyst.entity';
 export * from './client-hours-alert.entity';
-export * from './client-payment.entity';
 export * from './client-receipt.entity';
 export * from './client.entity';
 export * from './collaborator.entity';
@@ -64,7 +62,6 @@ export const entities = [
   ProjectDeliverableEntity,
   ClientFunctionalAnalystEntity,
   ClientHoursAlertEntity,
-  ClientPaymentEntity,
   ClientReceiptEntity,
   CcConfigEntity,
   CcMovementEntity,

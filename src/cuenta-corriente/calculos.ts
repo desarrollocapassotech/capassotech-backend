@@ -152,8 +152,8 @@ export const netoDeTotal = (total: number, conIva: boolean) =>
   redondear(conIva ? total / 1.21 : total);
 
 /**
- * Meses cerrados desde el de arranque hasta el anterior a `hoy` (el mes en curso no genera
- * cargo: es lo mismo que excluye la deuda de clientes).
+ * Meses cerrados desde el de arranque hasta el anterior a `hoy`: el mes en curso no genera
+ * cargo.
  */
 export function mesesCerrados(desde: string, hoy: string): string[] {
   const actual = hoy.slice(0, 7);
@@ -199,27 +199,4 @@ export function resolverAjuste(
   const nuevo = redondear(libre.importe + diferencia);
   if (Math.abs(nuevo) <= EPS) return { accion: 'borrar', id: libre.id };
   return { accion: 'actualizar', id: libre.id, importe: nuevo };
-}
-
-/**
- * Horas pagadas de un mes para la deuda de clientes (`client_payments`): proporcionales a lo
- * imputado de cada cargo. Con todo cancelado da las horas redondeadas que se le cobran.
- */
-export function horasPagadasDelMes(
-  cargos: Array<{ horas: number; importe: number; imputado: number }>,
-): number {
-  const conHoras = cargos.filter((c) => c.horas > 0 && c.importe > 0);
-  const totalHoras = conHoras.reduce((t, c) => t + c.horas, 0);
-  if (
-    conHoras.length > 0 &&
-    conHoras.every((c) => c.imputado >= c.importe - EPS)
-  ) {
-    return Math.round(totalHoras);
-  }
-  return redondear(
-    conHoras.reduce(
-      (t, c) => t + c.horas * Math.min(1, c.imputado / c.importe),
-      0,
-    ),
-  );
 }

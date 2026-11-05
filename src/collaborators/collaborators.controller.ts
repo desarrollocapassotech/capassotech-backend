@@ -3,12 +3,10 @@ import {
   Controller,
   Delete,
   Get,
-  Header,
   Param,
   Patch,
   Post,
   Put,
-  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -18,14 +16,11 @@ import { AuthService } from '../auth/auth.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/auth.types';
-import { AuthenticatedRequest, FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
+import {
+  AuthenticatedRequest,
+  FirebaseAuthGuard,
+} from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { CollaboratorReceiptSenderService } from './collaborator-receipt-sender.service';
-import { CollaboratorReceiptService } from './collaborator-receipt.service';
-import type {
-  GenerateCollaboratorReceiptDto,
-  SendCollaboratorReceiptEmailDto,
-} from './collaborator-receipt.dto';
 import { CollaboratorsService } from './collaborators.service';
 import type {
   CreateCollaboratorDto,
@@ -42,32 +37,47 @@ export class CollaboratorsController {
   constructor(
     private readonly collaboratorsService: CollaboratorsService,
     private readonly authService: AuthService,
-    private readonly collaboratorReceiptService: CollaboratorReceiptService,
-    private readonly receiptSender: CollaboratorReceiptSenderService,
   ) {}
 
   @Get()
   async findAll(@CurrentUser() user: AuthenticatedRequest['user']) {
-    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requesterProfile = await this.authService.getProfile(
+      user.uid,
+      user.email,
+    );
     const requester = { uid: user.uid, roles: requesterProfile.roles };
     const [collaborators, managedCollaboratorIds] = await Promise.all([
       this.collaboratorsService.findAll(),
       this.collaboratorsService.resolveManagedCollaboratorIds(requester),
     ]);
     return collaborators.map((collaborator) =>
-      this.collaboratorsService.maskFinancialsForRequester(collaborator, requester, managedCollaboratorIds),
+      this.collaboratorsService.maskFinancialsForRequester(
+        collaborator,
+        requester,
+        managedCollaboratorIds,
+      ),
     );
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string, @CurrentUser() user: AuthenticatedRequest['user']) {
-    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+  async findOne(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedRequest['user'],
+  ) {
+    const requesterProfile = await this.authService.getProfile(
+      user.uid,
+      user.email,
+    );
     const requester = { uid: user.uid, roles: requesterProfile.roles };
     const [collaborator, managedCollaboratorIds] = await Promise.all([
       this.collaboratorsService.findOne(id),
       this.collaboratorsService.resolveManagedCollaboratorIds(requester),
     ]);
-    return this.collaboratorsService.maskFinancialsForRequester(collaborator, requester, managedCollaboratorIds);
+    return this.collaboratorsService.maskFinancialsForRequester(
+      collaborator,
+      requester,
+      managedCollaboratorIds,
+    );
   }
 
   // Alta: solo admin (igual que hoy, el botón "Nuevo Colaborador" no se muestra
@@ -89,41 +99,14 @@ export class CollaboratorsController {
     @Body() body: UpdateCollaboratorDto,
     @CurrentUser() user: AuthenticatedRequest['user'],
   ) {
-    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requesterProfile = await this.authService.getProfile(
+      user.uid,
+      user.email,
+    );
     return this.collaboratorsService.update(id, body, {
       uid: user.uid,
       roles: requesterProfile.roles,
     });
-  }
-
-  // Recibo de pago: admin o contable (ver EmployeeManagement.tsx -> botón
-  // "Emitir recibo"). El frontend arma y previsualiza los datos editables; acá
-  // solo se vuelcan sobre el template de templates/template-recibo-colaborador.pdf.
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.CONTABLE)
-  @Post(':id/receipt')
-  @Header('Content-Type', 'application/pdf')
-  async generateReceipt(
-    @Param('id') id: string,
-    @Body() body: GenerateCollaboratorReceiptDto,
-  ): Promise<StreamableFile> {
-    await this.collaboratorsService.findOne(id); // 404 si no existe
-    const pdf = await this.collaboratorReceiptService.generate(body);
-    return new StreamableFile(pdf);
-  }
-
-  // Envía por email el mismo recibo de la vista previa (mismos permisos que
-  // generateReceipt). El destinatario lo elige quien emite el recibo en el
-  // diálogo (por defecto, el email personal del colaborador, o el laboral si no tiene).
-  @UseGuards(RolesGuard)
-  @Roles(UserRole.ADMIN, UserRole.CONTABLE)
-  @Post(':id/receipt/email')
-  async sendReceiptEmail(
-    @Param('id') id: string,
-    @Body() body: SendCollaboratorReceiptEmailDto,
-  ): Promise<{ sent: true }> {
-    await this.collaboratorsService.findOne(id); // 404 si no existe
-    return this.receiptSender.send(id, body);
   }
 
   // Foto de perfil: mismo criterio de permisos que update() (ver
@@ -131,13 +114,18 @@ export class CollaboratorsController {
   // sobre su perfil. Sube directo a Firebase Storage vía el backend, en vez de
   // subir desde el navegador como antes.
   @Post(':id/profile-image')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }),
+  )
   async uploadProfileImage(
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser() user: AuthenticatedRequest['user'],
   ) {
-    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requesterProfile = await this.authService.getProfile(
+      user.uid,
+      user.email,
+    );
     return this.collaboratorsService.uploadProfileImage(id, file, {
       uid: user.uid,
       roles: requesterProfile.roles,
@@ -152,7 +140,10 @@ export class CollaboratorsController {
     @Body() body: ReplaceCollaboratorProjectRatesDto,
     @CurrentUser() user: AuthenticatedRequest['user'],
   ) {
-    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    const requesterProfile = await this.authService.getProfile(
+      user.uid,
+      user.email,
+    );
     return this.collaboratorsService.replaceProjectRates(id, body.rates ?? [], {
       uid: user.uid,
       roles: requesterProfile.roles,
