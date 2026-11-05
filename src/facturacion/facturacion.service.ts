@@ -161,16 +161,7 @@ export class FacturacionService {
       clientes,
       cotizacion.valor,
     );
-    // Sin redondear, por proyecto: la deuda de clientes redondea el total del mes a su manera.
-    const horasPorProyecto = new Map<string, number>();
-    for (const e of horas.entries) {
-      horasPorProyecto.set(
-        e.project.id,
-        (horasPorProyecto.get(e.project.id) ?? 0) +
-          Number(e.billableHours || 0),
-      );
-    }
-    return { ...r, cotizacion, horasPorProyecto };
+    return { ...r, cotizacion };
   }
 
   /** Datos del Facturador para emitir sin pasar por el modal: punto de venta y si la factura lleva IVA. */

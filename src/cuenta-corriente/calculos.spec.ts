@@ -2,7 +2,6 @@ import {
   calcularImputacion,
   calcularSaldos,
   convertir,
-  horasPagadasDelMes,
   lineasDelComprobante,
   mesesCerrados,
   netoDeTotal,
@@ -185,23 +184,5 @@ describe('resolverAjuste', () => {
     expect(
       resolverAjuste(130, 100, [{ id: 'x', importe: 20, imputado: true }]),
     ).toEqual({ accion: 'crear', importe: 10 });
-  });
-});
-
-describe('horasPagadasDelMes', () => {
-  it('con todo cancelado da las horas redondeadas que se cobran', () => {
-    expect(
-      horasPagadasDelMes([{ horas: 67.77, importe: 100, imputado: 100 }]),
-    ).toBe(68);
-  });
-  it('pago parcial: proporcional', () => {
-    expect(
-      horasPagadasDelMes([{ horas: 100, importe: 1000, imputado: 400 }]),
-    ).toBe(40);
-  });
-  it('un abono sin horas no suma', () => {
-    expect(
-      horasPagadasDelMes([{ horas: 0, importe: 500, imputado: 500 }]),
-    ).toBe(0);
   });
 });

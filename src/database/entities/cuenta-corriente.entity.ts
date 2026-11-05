@@ -25,8 +25,6 @@ export interface CcLineaDetalle {
 
 export interface CcDetalle {
   lineas: CcLineaDetalle[];
-  /** Horas facturables sin redondear del cargo: alimentan las horas pagadas de la deuda. */
-  horasFacturables?: number;
 }
 
 // tracker.cc_config: mes desde el que arranca la cuenta corriente (fila única, id = 1).

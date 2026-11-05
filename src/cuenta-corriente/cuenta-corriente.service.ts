@@ -18,7 +18,6 @@ import {
   CcImputationEntity,
   CcMovementEntity,
   ClientEntity,
-  ClientPaymentEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
@@ -40,13 +39,13 @@ import {
   calcularSaldos,
   convertir,
   EPS,
-  horasPagadasDelMes,
   lineasDelComprobante,
   mesesCerrados,
   netoDeTotal,
   redondear,
   resolverAjuste,
 } from './calculos';
+import { cuentaParaPortal } from './portal';
 
 // Cuenta corriente de clientes y colaboradores. A diferencia de Vialto (donde el cargo nace de
 // la factura), acá el cargo nace de las horas y los abonos del mes, y la factura o el recibo
@@ -104,15 +103,14 @@ interface CargoCalculado {
  */
 function mismoDetalle(a: CcDetalle | null, b: CcDetalle) {
   const normal = (d: CcDetalle | null) =>
-    JSON.stringify([
-      d?.horasFacturables ?? 0,
+    JSON.stringify(
       (d?.lineas ?? []).map((l) => [
         l.descripcion,
         l.cantidad,
         l.importe,
         l.referencia ?? null,
       ]),
-    ]);
+    );
   return normal(a) === normal(b);
 }
 
@@ -156,8 +154,6 @@ export class CuentaCorrienteService {
     private readonly imputaciones: Repository<CcImputationEntity>,
     @InjectRepository(ClientEntity)
     private readonly clientes: Repository<ClientEntity>,
-    @InjectRepository(ClientPaymentEntity)
-    private readonly pagosCliente: Repository<ClientPaymentEntity>,
     @InjectRepository(CollaboratorEntity)
     private readonly colaboradores: Repository<CollaboratorEntity>,
     @InjectRepository(CollaboratorProjectRateEntity)
@@ -328,6 +324,15 @@ export class CuentaCorrienteService {
       tcHoy: { valor: tcHoy.rate, fijado: tcHoy.locked },
       cuentas: cuentas.map((c) => ({ ...c, saldos: saldosDe(c.id) })),
     };
+  }
+
+  /** La cuenta del cliente logueado, para el portal. El cliente sale del usuario, nunca del pedido. */
+  async miCuenta(uid: string) {
+    const cliente = await this.clientes.findOneBy({ userId: uid });
+    if (!cliente) {
+      throw new NotFoundException('Tu usuario no está asociado a un cliente.');
+    }
+    return cuentaParaPortal(await this.cuenta('cliente', cliente.id));
   }
 
   /** Movimientos de la cuenta, con imputaciones, pendientes y saldo por moneda. */
@@ -624,33 +629,24 @@ export class CuentaCorrienteService {
     r: Awaited<ReturnType<FacturacionService['calcular']>>,
   ): CargoCalculado[] {
     const clienteId = entidad.id;
-    const porMoneda = new Map<
-      CcMoneda,
-      { lineas: CcLineaDetalle[]; horas: number }
-    >();
+    const porMoneda = new Map<CcMoneda, CcLineaDetalle[]>();
     const grupo = (moneda: CcMoneda) => {
-      if (!porMoneda.has(moneda))
-        porMoneda.set(moneda, { lineas: [], horas: 0 });
+      if (!porMoneda.has(moneda)) porMoneda.set(moneda, []);
       return porMoneda.get(moneda)!;
     };
     for (const l of r.lineas) {
       if (l.clienteId !== clienteId || l.problema) continue;
-      const moneda: CcMoneda = l.original ? 'USD' : 'ARS';
-      const g = grupo(moneda);
-      g.lineas.push({
+      grupo(l.original ? 'USD' : 'ARS').push({
         descripcion: l.descripcion,
         cantidad: l.unidad === 'HORA' ? `${l.cantidad} h` : `${l.cantidad} mes`,
         importe: Number(l.original ? l.original.importe : l.importe),
         referencia: l.referencia,
       });
-      if (l.proyecto.tipo === 'hourly') {
-        g.horas += r.horasPorProyecto.get(l.proyecto.id) ?? 0;
-      }
     }
     // Los conceptos fijos están en pesos si se le factura; en la moneda del cliente si es recibo.
     const c = datosCliente(entidad);
     for (const concepto of c.conceptos) {
-      grupo(c.documento === 'recibo' ? c.moneda : 'ARS').lineas.push({
+      grupo(c.documento === 'recibo' ? c.moneda : 'ARS').push({
         descripcion: concepto.descripcion,
         cantidad: concepto.cantidad,
         importe: redondear(
@@ -658,10 +654,10 @@ export class CuentaCorrienteService {
         ),
       });
     }
-    return [...porMoneda].map(([moneda, g]) => ({
+    return [...porMoneda].map(([moneda, lineas]) => ({
       moneda,
-      importe: redondear(g.lineas.reduce((t, l) => t + l.importe, 0)),
-      detalle: { lineas: g.lineas, horasFacturables: g.horas },
+      importe: redondear(lineas.reduce((t, l) => t + l.importe, 0)),
+      detalle: { lineas },
     }));
   }
 
@@ -1242,7 +1238,6 @@ export class CuentaCorrienteService {
       },
     );
 
-    await this.actualizarHorasPagadas(cargoInicial);
     return this.emitirSiFalta(imputacion, email);
   }
 
@@ -1432,12 +1427,8 @@ export class CuentaCorrienteService {
     if (anulada && !i.reversedAt) {
       i.reversedAt = new Date();
       i.reversalReason = 'Anulada con nota de crédito desde el comprobante.';
-      await this.imputaciones.save(i);
-      const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
-      await this.actualizarHorasPagadas(cargo);
-    } else {
-      await this.imputaciones.save(i);
     }
+    await this.imputaciones.save(i);
     return this.presentarImputacion(i);
   }
 
@@ -1479,8 +1470,6 @@ export class CuentaCorrienteService {
         ? motivo.trim().slice(0, 500)
         : null;
     await this.imputaciones.save(i);
-    const cargo = await this.movimientos.findOneByOrFail({ id: i.cargoId });
-    await this.actualizarHorasPagadas(cargo);
     return this.presentarImputacion(i);
   }
 
@@ -1597,47 +1586,6 @@ export class CuentaCorrienteService {
       to: typeof to === 'string' ? to : '',
       receipt: dto,
     });
-  }
-
-  // ── Deuda de clientes ────────────────────────────────────────────────────
-
-  /**
-   * La deuda de clientes (portal y ficha) se calcula en horas pagadas por mes: lo imputado se
-   * pasa a horas para que muestre lo mismo que la cuenta corriente.
-   */
-  private async actualizarHorasPagadas(cargo: CcMovementEntity) {
-    if (cargo.side !== 'cliente' || !cargo.month || cargo.origen !== 'mes') {
-      return;
-    }
-    const cargos = await this.movimientos.findBy({
-      clientId: cargo.clientId!,
-      month: cargo.month,
-      origen: 'mes',
-    });
-    const imputaciones = await this.imputaciones.findBy({
-      cargoId: In(cargos.map((c) => c.id)),
-    });
-    const horas = horasPagadasDelMes(
-      cargos.map((c) => ({
-        horas: c.detail?.horasFacturables ?? 0,
-        importe: Number(c.amount),
-        imputado: imputaciones
-          .filter((i) => i.cargoId === c.id && !i.reversedAt)
-          .reduce((t, i) => t + Number(i.amount), 0),
-      })),
-    );
-    const [year, month] = cargo.month.split('-').map(Number);
-    await this.pagosCliente.upsert(
-      {
-        clientId: cargo.clientId!,
-        year,
-        month,
-        hoursPaid: horas.toFixed(2),
-        note: 'Calculado desde Cuenta corriente',
-        updatedBy: 'cuenta-corriente',
-      },
-      ['clientId', 'year', 'month'],
-    );
   }
 }
 

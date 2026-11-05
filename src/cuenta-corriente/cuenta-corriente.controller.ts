@@ -46,6 +46,13 @@ function claveIdempotencia(clave: string | undefined): string {
 export class CuentaCorrienteController {
   constructor(private readonly cc: CuentaCorrienteService) {}
 
+  /** Portal de clientes: reemplaza los roles del controller. Solo devuelve la cuenta del usuario. */
+  @Roles(UserRole.CLIENT)
+  @Get('mi-cuenta')
+  miCuenta(@CurrentUser() u: Usuario) {
+    return this.cc.miCuenta(u.uid);
+  }
+
   @Get('config')
   config() {
     return this.cc.obtenerConfig();
