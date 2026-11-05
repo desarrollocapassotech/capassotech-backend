@@ -6,6 +6,7 @@ import { ClientReceiptEntity } from './client-receipt.entity';
 import { ClientEntity } from './client.entity';
 import { CollaboratorEntity } from './collaborator.entity';
 import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entity';
+import { CollaboratorReceiptAcknowledgementEntity } from './collaborator-receipt-acknowledgement.entity';
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseProjectEntity } from './expense-project.entity';
 import { HealthCheckEntity } from './health-check.entity';
@@ -29,6 +30,7 @@ export * from './client-receipt.entity';
 export * from './client.entity';
 export * from './collaborator.entity';
 export * from './collaborator-project-rate.entity';
+export * from './collaborator-receipt-acknowledgement.entity';
 export * from './enums';
 export * from './expense.entity';
 export * from './expense-project.entity';
@@ -49,6 +51,7 @@ export const entities = [
   AppUserEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
+  CollaboratorReceiptAcknowledgementEntity,
   ClientEntity,
   ProjectEntity,
   ProjectCollaboratorEntity,
