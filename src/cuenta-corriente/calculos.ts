@@ -1,6 +1,8 @@
 // Reglas de la cuenta corriente, sin base ni Facturador: cuánto se imputa, cómo se reparten
 // los saldos por moneda (nunca se suman entre sí) y qué líneas lleva el comprobante.
 
+import type { CcComprobantePrevio } from '../database/entities/cuenta-corriente.entity';
+
 export type Moneda = 'USD' | 'ARS';
 
 export const EPS = 0.005;
@@ -169,6 +171,83 @@ export function mesesCerrados(desde: string, hoy: string): string[] {
       a += 1;
     }
   }
+}
+
+export interface ComprobanteFacturador {
+  id: string;
+  tipo?: string;
+  estado?: string;
+  ambiente?: string;
+  puntoVenta?: number;
+  numero?: number | null;
+  moneda?: string;
+  importes?: { total?: string };
+  notas?: Array<{ estado: string }>;
+}
+
+/** "00001-00000012". */
+export const numeroDeComprobante = (
+  puntoVenta: number | undefined,
+  numero: number,
+) =>
+  `${String(puntoVenta ?? 0).padStart(5, '0')}-${String(numero).padStart(8, '0')}`;
+
+/**
+ * Las facturas en las que ya se emitieron las líneas de un cargo. Cada línea es un ítem y varias
+ * suelen estar en la misma factura. Un borrador no cuenta: todavía no es un comprobante.
+ */
+export function facturasDeItems(
+  items: Array<{ estado: string; comprobanteId: string | null }>,
+): string[] {
+  return [
+    ...new Set(
+      items.flatMap((i) =>
+        i.estado === 'FACTURADO' && i.comprobanteId ? [i.comprobanteId] : [],
+      ),
+    ),
+  ];
+}
+
+/** Emitida y sin una nota de crédito que la anule. */
+export const facturaVigente = (c: ComprobanteFacturador) =>
+  c.estado === 'EMITIDO' &&
+  !(c.notas ?? []).some((n) => n.estado === 'EMITIDO');
+
+export function comprobantePrevioDe(
+  c: ComprobanteFacturador,
+): CcComprobantePrevio {
+  const total = Number(c.importes?.total);
+  return {
+    comprobanteId: c.id,
+    tipo: c.tipo ?? null,
+    numero: c.numero != null ? numeroDeComprobante(c.puntoVenta, c.numero) : null,
+    total: Number.isFinite(total) ? total : null,
+    moneda: c.moneda ?? null,
+    ambiente: c.ambiente ?? null,
+  };
+}
+
+export interface AdicionalRecibo {
+  descripcion: string;
+  importe: number;
+}
+
+/** Adicionales del recibo que llegan del formulario. `null`: hay alguno mal cargado. */
+export function adicionalesValidos(valor: unknown): AdicionalRecibo[] | null {
+  if (valor === undefined || valor === null) return [];
+  if (!Array.isArray(valor)) return null;
+  const resultado: AdicionalRecibo[] = [];
+  for (const item of valor as Array<Record<string, unknown> | null>) {
+    const descripcion =
+      typeof item?.descripcion === 'string' ? item.descripcion.trim() : '';
+    const importe = Number(item?.importe);
+    if (!descripcion || !Number.isFinite(importe) || importe <= 0) return null;
+    resultado.push({
+      descripcion: descripcion.slice(0, 200),
+      importe: redondear(importe),
+    });
+  }
+  return resultado;
 }
 
 /** Fecha de la cuota `numero` (desde 1): mismo día de cada mes, o el último si ese mes no lo tiene. */

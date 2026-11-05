@@ -24,12 +24,7 @@ import {
 } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { FacturadorClient } from '../integrations/facturador.client';
-import {
-  FacturacionService,
-  type AltaClienteDto,
-  type DatosEmitir,
-  type DatosRecibo,
-} from './facturacion.service';
+import { FacturacionService, type AltaClienteDto } from './facturacion.service';
 
 type Usuario = AuthenticatedRequest['user'];
 type Cuerpo = Record<string, unknown>;
@@ -52,9 +47,9 @@ function claveIdempotencia(clave: string | undefined): string {
 }
 
 /**
- * Pantalla Facturación: todo lo que se hace con el Facturador desde el tracker,
- * salvo la configuración (emisor, certificados, puntos de venta), que se hace en el
- * Facturador ("Ir al facturador"). Solo admin y contable.
+ * Lo que la cuenta corriente necesita del Facturador: clientes y comprobantes ya creados. Los
+ * comprobantes nuevos salen solo al imputar un pago. La configuración (emisor, certificados,
+ * puntos de venta) se hace en el Facturador ("Ir al facturador"). Solo admin y contable.
  */
 @UseGuards(FirebaseAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN, UserRole.CONTABLE)
@@ -89,40 +84,11 @@ export class FacturacionController {
     }
   }
 
-  // ── Resumen del mes y facturar ───────────────────────────────────────────
+  // ── Resumen del mes ──────────────────────────────────────────────────────
 
   @Get('resumen')
   resumen(@CurrentUser() u: Usuario, @Query('mes') mes?: string) {
     return this.facturacion.resumen(mes, u.email);
-  }
-
-  /** Arma la factura con las líneas marcadas de un cliente y la deja como borrador (sin emitir). */
-  @Post('borrador')
-  guardarBorrador(
-    @CurrentUser() u: Usuario,
-    @Headers('idempotency-key') clave: string | undefined,
-    @Body() body: DatosEmitir,
-  ) {
-    return this.facturacion.guardarBorrador(
-      body ?? {},
-      claveIdempotencia(clave),
-      u.email,
-    );
-  }
-
-  /** Factura las líneas marcadas de un cliente y la emite en ARCA en el mismo pedido. */
-  @Post('emitir')
-  @HttpCode(200)
-  emitirDelMes(
-    @CurrentUser() u: Usuario,
-    @Headers('idempotency-key') clave: string | undefined,
-    @Body() body: DatosEmitir,
-  ) {
-    return this.facturacion.facturarYEmitir(
-      body ?? {},
-      claveIdempotencia(clave),
-      u.email,
-    );
   }
 
   // ── Clientes ─────────────────────────────────────────────────────────────
@@ -161,21 +127,6 @@ export class FacturacionController {
       body?.documento,
       body?.moneda,
     );
-  }
-
-  /** Recibo sin validez fiscal (PDF): no se guarda ni se numera. */
-  @Post('recibo')
-  async recibo(
-    @CurrentUser() u: Usuario,
-    @Body() body: DatosRecibo,
-    @Res() res: Response,
-  ) {
-    const r = await this.facturacion.recibo(body ?? {}, u.email);
-    res.setHeader('Content-Type', r.tipo);
-    if (r.disposition) res.setHeader('Content-Disposition', r.disposition);
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.send(r.buffer);
   }
 
   @Post('clientes')
@@ -219,34 +170,7 @@ export class FacturacionController {
 
   // ── Comprobantes ─────────────────────────────────────────────────────────
 
-  @Get('comprobantes')
-  comprobantes(
-    @CurrentUser() u: Usuario,
-    @Query('estado') estado?: string,
-    @Query('clienteId') clienteId?: string,
-    @Query('pagina') pagina?: string,
-    @Query('porPagina') porPagina?: string,
-  ) {
-    return this.facturador.pedir('GET', '/comprobantes', {
-      query: { estado, clienteId, pagina, porPagina },
-      email: u.email,
-    });
-  }
-
-  /** Factura manual: el cliente llega como cliente del tracker (`clienteTrackerId`). Se crea y se emite. */
-  @Post('comprobantes/emitir')
-  @HttpCode(200)
-  emitirManual(
-    @CurrentUser() u: Usuario,
-    @Headers('idempotency-key') clave: string | undefined,
-    @Body() body: Cuerpo,
-  ) {
-    return this.facturacion.crearYEmitir(
-      body ?? {},
-      claveIdempotencia(clave),
-      u.email,
-    );
-  }
+  // Se crean solo desde la cuenta corriente, al imputar. Acá se ve, corrige o anula uno que ya existe.
 
   @Get('comprobantes/:id')
   comprobante(@CurrentUser() u: Usuario, @Param('id') c: string) {
@@ -306,18 +230,6 @@ export class FacturacionController {
       claveIdempotencia(clave),
       u.email,
     );
-  }
-
-  @Post('comprobantes/:id/notas')
-  crearNota(
-    @CurrentUser() u: Usuario,
-    @Param('id') c: string,
-    @Body() body: Cuerpo,
-  ) {
-    return this.facturador.pedir('POST', `/comprobantes/${id(c)}/notas`, {
-      body,
-      email: u.email,
-    });
   }
 
   @Post('comprobantes/:id/verificar')

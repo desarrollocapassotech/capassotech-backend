@@ -27,7 +27,6 @@ import {
   nombreMes,
   rangoMes,
   type DatosCliente,
-  type LineaResumen,
 } from './resumen';
 
 // Pantalla Facturación del tracker: arma lo facturable del mes con los datos del
@@ -116,21 +115,6 @@ export class FacturacionService {
       );
     }
     return { valor: rate, fijada: locked };
-  }
-
-  /**
-   * El TC es uno solo por mes: el que se usa al facturar (o al hacer un recibo) queda como el
-   * del mes, para el tracker, los recibos y las demás facturas. Sin cambios, no se toca.
-   */
-  private async fijarTcDelMes(
-    mes: string,
-    tipoCambio: number | undefined,
-    email?: string,
-  ) {
-    if (tipoCambio === undefined) return;
-    const actual = await this.tipoDeCambio.getUsdRate(mes);
-    if (actual.locked && actual.rate === tipoCambio) return;
-    await this.tipoDeCambio.setMonthlyRate(mes, tipoCambio, email ?? null);
   }
 
   /** Lo facturable del mes: las líneas de Facturación son también los cargos de la cuenta corriente. */
@@ -362,148 +346,6 @@ export class FacturacionService {
     return creado.id;
   }
 
-  /**
-   * Carga los ítems y arma los borradores. Con `clave`, los dos POST al Facturador usan claves
-   * derivadas: reintentar con la misma clave devuelve lo mismo y no duplica nada.
-   */
-  async facturar(
-    dto: { mes?: string; referencias?: unknown; fechaEmision?: unknown },
-    email?: string,
-    clave?: string,
-  ) {
-    const mes = validarMes(dto.mes);
-    const refs = Array.isArray(dto.referencias)
-      ? dto.referencias.filter((x): x is string => typeof x === 'string')
-      : [];
-    if (!refs.length) throw new BadRequestException('Elegí qué facturar.');
-    const fechaEmision =
-      typeof dto.fechaEmision === 'string' && dto.fechaEmision
-        ? dto.fechaEmision
-        : undefined;
-
-    // Los importes se recalculan acá: nunca se toman del navegador.
-    const r = await this.calcular(mes);
-    const elegidas = r.lineas.filter((l) => refs.includes(l.referencia));
-    if (elegidas.length !== new Set(refs).size) {
-      throw new BadRequestException(
-        'Algunas líneas ya no están en el resumen: recargalo.',
-      );
-    }
-    const conProblema = elegidas.find((l) => l.problema);
-    if (conProblema) {
-      throw new BadRequestException(
-        `${conProblema.descripcion}: ${conProblema.problema}`,
-      );
-    }
-
-    const clientes = r.clientes.filter((c) =>
-      elegidas.some((l) => l.clienteId === c.id),
-    );
-    const conRecibo = clientes.filter((c) => c.documento === 'recibo');
-    if (conRecibo.length) {
-      throw new BadRequestException(
-        `A ${conRecibo.map((c) => c.razonSocial).join(', ')} se le emite recibo, no factura.`,
-      );
-    }
-    const estados = await this.estadoClientes(clientes, email);
-    const sinDatos = clientes.filter(
-      (c) => estados.get(c.id)!.alta === 'faltan-datos',
-    );
-    if (sinDatos.length) {
-      throw new UnprocessableEntityException({
-        message: `Falta dar de alta en el Facturador: ${sinDatos.map((c) => c.razonSocial).join(', ')} (no tienen CUIT válido en el tracker).`,
-        clientes: sinDatos.map((c) => c.id),
-      });
-    }
-    const idFacturador = new Map<string, string>();
-    for (const c of clientes) {
-      idFacturador.set(
-        c.id,
-        await this.resolverCliente(c, estados.get(c.id)!, email),
-      );
-    }
-
-    const carga = await this.facturador.pedir<{
-      importacion: { advertencias: Array<{ mensaje: string }> };
-      items: ItemFacturador[];
-    }>('POST', '/items', {
-      email,
-      idempotencyKey: clave && `${clave}-items`,
-      body: {
-        descripcion: `Tracker - ${nombreMes(mes)}`,
-        confirmar: true,
-        items: elegidas.map((l) =>
-          this.item(l, idFacturador.get(l.clienteId)!, r.cotizacion.valor),
-        ),
-      },
-    });
-
-    const validos = carga.items.filter((i) => i.estado === 'VALIDO');
-    const errores = carga.items
-      .filter((i) => i.estado === 'CON_ERRORES')
-      .map((i) => ({
-        referencia: i.referenciaExterna,
-        mensajes: i.errores.map((e) => e.mensaje),
-      }));
-    const omitidos = carga.items
-      .filter((i) => i.estado === 'EN_BORRADOR' || i.estado === 'FACTURADO')
-      .map((i) => ({
-        referencia: i.referenciaExterna,
-        estado: i.estado,
-        comprobanteId: i.comprobanteId,
-      }));
-
-    const borradores = validos.length
-      ? await this.facturador.pedir<{ comprobantes: unknown[] }>(
-          'POST',
-          '/comprobantes/borradores',
-          {
-            email,
-            idempotencyKey: clave && `${clave}-borrador`,
-            body: {
-              referencias: validos.map((i) => i.referenciaExterna),
-              agrupacion: 'cliente',
-              ...(fechaEmision ? { fechaEmision } : {}),
-            },
-          },
-        )
-      : { comprobantes: [] };
-
-    return {
-      comprobantes: borradores.comprobantes,
-      errores,
-      omitidos,
-      advertencias: carga.importacion.advertencias.map((a) => a.mensaje),
-    };
-  }
-
-  private item(l: LineaResumen, clienteId: string, tipoCambio: number) {
-    return {
-      referenciaExterna: l.referencia,
-      cliente: { clienteId },
-      descripcion: l.descripcion,
-      cantidad: l.cantidad,
-      unidad: l.unidad,
-      precioUnitario: l.precioUnitario,
-      moneda: l.moneda,
-      alicuotaIva: '21',
-      periodo: l.periodo,
-      metadatos: {
-        proyectoId: l.proyecto.id,
-        clienteTrackerId: l.clienteId,
-        // Con qué TC se pasó a pesos: queda en el ítem para mostrarlo en el borrador
-        // aunque después cambie el TC del mes.
-        ...(l.original
-          ? {
-              tipoCambio,
-              importeOriginal: l.original.importe,
-              monedaOriginal: l.original.moneda,
-            }
-          : {}),
-      },
-    };
-  }
-
   // ── Clientes ─────────────────────────────────────────────────────────────
 
   padron(cuit: string, email?: string) {
@@ -602,7 +444,7 @@ export class FacturacionService {
     const estado = (await this.estadoClientes([c], email)).get(c.id)!;
     if (estado.alta === 'faltan-datos') {
       throw new UnprocessableEntityException(
-        `${c.razonSocial} no tiene CUIT válido en el tracker: dalo de alta en el Facturador desde "Para facturar".`,
+        `${c.razonSocial} no tiene CUIT válido en el tracker: completá sus datos para facturar.`,
       );
     }
     const clienteId = await this.resolverCliente(c, estado, email);
@@ -667,25 +509,6 @@ export class FacturacionService {
     return { clienteTrackerId, documento, ...(moneda ? { moneda } : {}) };
   }
 
-  /**
-   * Recibo sin validez fiscal para un cliente marcado como "recibo": se arma con las líneas
-   * del modal y lo genera el Facturador (con sus datos y su logo). No se guarda ni se numera.
-   */
-  async recibo(dto: DatosRecibo, email?: string) {
-    const { pdf, clienteId, fecha, moneda, total } = await this.reciboPdf(
-      dto,
-      email,
-    );
-    // Se registra por el mes de las horas (o el de la fecha del recibo) para mostrarlo como hecho.
-    const mes =
-      typeof dto.mes === 'string' && MES.test(dto.mes)
-        ? dto.mes
-        : fecha.slice(0, 7);
-    await this.fijarTcDelMes(mes, tipoCambioDe(dto.tipoCambio), email);
-    await this.registrarRecibo(clienteId, mes, fecha, moneda, total, email);
-    return pdf;
-  }
-
   /** Deja constancia de que se le hizo recibo al cliente por ese mes (el PDF no se guarda). */
   async registrarRecibo(
     clienteId: string,
@@ -704,14 +527,6 @@ export class FacturacionService {
       currency: moneda,
       total,
       createdBy: email ?? null,
-    });
-  }
-
-  /** Recibos ya hechos a un cliente por un mes. */
-  recibosDelMes(clienteId: string, mes: string) {
-    const [anio, numeroMes] = mes.split('-').map(Number);
-    return this.recibos.find({
-      where: { clientId: clienteId, year: anio, month: numeroMes },
     });
   }
 
@@ -788,64 +603,6 @@ export class FacturacionService {
     };
   }
 
-  // ── Facturar y emitir en un paso ─────────────────────────────────────────
-  // El usuario no ve borradores: arma la factura en un modal y la emite. Por dentro se
-  // crea el comprobante (el Facturador lo necesita para emitir sin duplicar) y se emite
-  // en el mismo pedido. Todo con claves derivadas de la del intento: si se corta y se
-  // reintenta, no se crea otro comprobante ni se emite dos veces.
-
-  /** Las líneas marcadas de un cliente del mes: se cargan, se arma el comprobante y se emite. */
-  async facturarYEmitir(dto: DatosEmitir, clave: string, email?: string) {
-    const { creado, cambios } = await this.armarDelMes(dto, clave, email);
-    return this.emitirCreado(creado, cambios, clave, email);
-  }
-
-  /** Igual que facturar y emitir, pero queda como borrador (con lo editado en el modal) para emitirlo después. */
-  async guardarBorrador(dto: DatosEmitir, clave: string, email?: string) {
-    const { creado, cambios } = await this.armarDelMes(dto, clave, email);
-    return this.aplicarCambios(creado, cambios, email);
-  }
-
-  /** Carga las líneas marcadas de un cliente y arma su comprobante (sin emitirlo). */
-  private async armarDelMes(dto: DatosEmitir, clave: string, email?: string) {
-    // Se valida lo editado (período, etc.) antes de cargar nada.
-    const cambios = ediciones(dto);
-    const sinLineasDelMes =
-      !Array.isArray(dto.referencias) || dto.referencias.length === 0;
-    if (sinLineasDelMes && typeof dto.clienteTrackerId === 'string') {
-      return this.armarSoloConceptos(dto, clave, email);
-    }
-    const tipoCambio = tipoCambioDe(dto.tipoCambio);
-    // Primero se fija el TC del mes: la factura se arma con ese. Con otro TC los precios en
-    // pesos cambian: el modal los manda ya recalculados en `lineas`.
-    await this.fijarTcDelMes(validarMes(dto.mes), tipoCambio, email);
-    const r = await this.facturar(
-      {
-        mes: dto.mes,
-        referencias: dto.referencias,
-        fechaEmision: dto.fechaEmision,
-      },
-      email,
-      clave,
-    );
-    if (r.errores.length) {
-      throw new UnprocessableEntityException(
-        r.errores.flatMap((e) => e.mensajes).join(' '),
-      );
-    }
-    if (r.comprobantes.length !== 1) {
-      throw new ConflictException(
-        r.comprobantes.length
-          ? 'Las líneas elegidas generaron más de un comprobante: revisalos en Comprobantes.'
-          : 'Esas líneas ya están en otro comprobante: revisalo en Comprobantes.',
-      );
-    }
-    return {
-      creado: r.comprobantes[0] as ComprobantePublico,
-      cambios,
-    };
-  }
-
   /**
    * Anular una factura emitida: se crea la nota de crédito por el total y se emite en el mismo
    * pedido (sin borrador de por medio). Con la misma clave, reintentar no crea otra nota.
@@ -868,92 +625,32 @@ export class FacturacionService {
         idempotencyKey: `${clave}-nota`,
       },
     );
-    return this.emitirCreado(nota, {}, clave, email);
+    return this.emitirCreado(nota, clave, email);
   }
 
-  /** Factura manual: se crea el comprobante con todos sus datos y se emite. */
+  /** Se crea el comprobante con todos sus datos y se emite. */
   async crearYEmitir(
     body: Record<string, unknown>,
     clave: string,
     email?: string,
   ) {
     const creado = await this.crearBorrador(body, email, clave);
-    return this.emitirCreado(creado, {}, clave, email);
+    return this.emitirCreado(creado, clave, email);
   }
 
-  /**
-   * Cliente sin horas ni abonos en el mes, solo con conceptos fijos: el comprobante se arma con
-   * las líneas del modal (período = el mes) en el primer punto de venta del ambiente actual.
-   */
-  private async armarSoloConceptos(
-    dto: DatosEmitir,
-    clave: string,
-    email?: string,
-  ) {
-    const mes = validarMes(dto.mes);
-    if (!Array.isArray(dto.lineas) || !dto.lineas.length) {
-      throw new BadRequestException('Elegí qué facturar.');
-    }
-    const { puntoVentaId } = await this.datosEmision(email);
-    const { desde, hasta } = rangoMes(mes);
-    const creado = await this.crearBorrador(
-      {
-        clienteTrackerId: dto.clienteTrackerId,
-        puntoVentaId,
-        concepto: 'SERVICIOS',
-        moneda: 'ARS',
-        fechaServicioDesde: desde,
-        fechaServicioHasta: hasta,
-        ...(typeof dto.fechaEmision === 'string' && dto.fechaEmision
-          ? { fechaEmision: dto.fechaEmision }
-          : {}),
-        ...ediciones(dto),
-      },
-      email,
-      clave,
-    );
-    return { creado, cambios: {} };
-  }
-
-  /**
-   * Aplica las ediciones del modal al comprobante recién creado. En un reintento puede estar ya
-   * editado (no se vuelve a editar) o emitido (se devuelve como está).
-   */
-  private async aplicarCambios(
+  /** En un reintento el comprobante puede estar ya emitido: se devuelve como está. */
+  private async emitirCreado(
     creado: ComprobantePublico,
-    cambios: Record<string, unknown>,
+    clave: string,
     email?: string,
   ) {
     const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
     const actual = await this.facturador.pedir<ComprobantePublico>(
       'GET',
       ruta,
-      {
-        email,
-      },
+      { email },
     );
     if (!['BORRADOR', 'RECHAZADO'].includes(actual.estado)) return actual;
-    if (!Object.keys(cambios).length || actual.version !== creado.version)
-      return actual;
-    return this.facturador.pedir<ComprobantePublico>('PATCH', ruta, {
-      email,
-      body: { ...cambios, version: actual.version },
-    });
-  }
-
-  /**
-   * Aplica las ediciones del modal y emite. En un reintento el comprobante puede estar ya
-   * editado (no se vuelve a editar) o emitido (se devuelve como está).
-   */
-  private async emitirCreado(
-    creado: ComprobantePublico,
-    cambios: Record<string, unknown>,
-    clave: string,
-    email?: string,
-  ) {
-    const actual = await this.aplicarCambios(creado, cambios, email);
-    if (!['BORRADOR', 'RECHAZADO'].includes(actual.estado)) return actual;
-    const ruta = `/comprobantes/${encodeURIComponent(creado.id)}`;
     return this.facturador.pedir<ComprobantePublico>('POST', `${ruta}/emitir`, {
       email,
       body: { version: actual.version },
@@ -976,24 +673,12 @@ export interface DatosRecibo {
   moneda?: unknown;
   fecha?: unknown;
   observaciones?: unknown;
-  /** TC con que se armó el recibo: queda como el del mes. */
-  tipoCambio?: unknown;
   lineas?: Array<{
     descripcion?: unknown;
     cantidad?: unknown;
     unidad?: unknown;
     precioUnitario?: unknown;
   }>;
-}
-
-/** TC que manda el modal (sin valor: no se toca el del mes). */
-function tipoCambioDe(valor: unknown): number | undefined {
-  if (valor === undefined || valor === null) return undefined;
-  const tc = Number(valor);
-  if (!(Number.isFinite(tc) && tc > 0)) {
-    throw new BadRequestException('El tipo de cambio no es válido.');
-  }
-  return tc;
 }
 
 /** "68 h", "35,5 h", "1 mes": lo que va en la columna Cantidad del recibo. */
@@ -1009,54 +694,4 @@ function formatearCuit(cuit: string) {
   return d.length === 11
     ? `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}`
     : cuit;
-}
-
-export interface DatosEmitir {
-  mes?: string;
-  /** Solo hace falta sin líneas del mes (cliente con conceptos fijos nada más). */
-  clienteTrackerId?: unknown;
-  referencias?: unknown;
-  fechaEmision?: unknown;
-  fechaVtoPago?: unknown;
-  /** Período del servicio (yyyy-MM-dd); sin valor, el del mes. */
-  fechaServicioDesde?: unknown;
-  fechaServicioHasta?: unknown;
-  observaciones?: unknown;
-  lineas?: unknown;
-  /** TC del mes con que se armó la factura: si cambió, queda como el del mes (los precios en pesos llegan recalculados en `lineas`). */
-  tipoCambio?: unknown;
-}
-
-/** Lo que el usuario cambió en el modal (el Facturador valida cada campo). */
-const FECHA = /^\d{4}-\d{2}-\d{2}$/;
-
-function ediciones(dto: DatosEmitir): Record<string, unknown> {
-  const desde = dto.fechaServicioDesde;
-  const hasta = dto.fechaServicioHasta;
-  if (
-    (desde !== undefined &&
-      !(typeof desde === 'string' && FECHA.test(desde))) ||
-    (hasta !== undefined && !(typeof hasta === 'string' && FECHA.test(hasta)))
-  ) {
-    throw new BadRequestException('El período no es válido.');
-  }
-  if (typeof desde === 'string' && typeof hasta === 'string' && desde > hasta) {
-    throw new BadRequestException(
-      'El período: la fecha "desde" no puede ser posterior a la "hasta".',
-    );
-  }
-  return {
-    // Período del servicio elegido en el modal (si no, queda el del mes).
-    ...(typeof desde === 'string' ? { fechaServicioDesde: desde } : {}),
-    ...(typeof hasta === 'string' ? { fechaServicioHasta: hasta } : {}),
-    ...(typeof dto.fechaVtoPago === 'string' && dto.fechaVtoPago
-      ? { fechaVtoPago: dto.fechaVtoPago }
-      : {}),
-    ...(typeof dto.observaciones === 'string' && dto.observaciones.trim()
-      ? { observaciones: dto.observaciones.trim() }
-      : {}),
-    ...(Array.isArray(dto.lineas) && dto.lineas.length
-      ? { lineas: dto.lineas }
-      : {}),
-  };
 }

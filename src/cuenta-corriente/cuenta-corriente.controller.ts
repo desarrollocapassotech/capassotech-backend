@@ -78,8 +78,12 @@ export class CuentaCorrienteController {
   }
 
   @Get('cuentas/:side/:id')
-  cuenta(@Param('side') side: string, @Param('id') id: string) {
-    return this.cc.cuenta(side, id);
+  cuenta(
+    @CurrentUser() u: Usuario,
+    @Param('side') side: string,
+    @Param('id') id: string,
+  ) {
+    return this.cc.cuenta(side, id, { email: u.email });
   }
 
   @Post('saldo-inicial')
@@ -123,12 +127,13 @@ export class CuentaCorrienteController {
     return this.cc.cambiarMoneda(id, body?.moneda, body?.tipoCambio);
   }
 
-  @Get('movimientos/:id/comprobantes-previos')
-  comprobantesPrevios(
+  @Post('movimientos/:id/comprobantes-previos/sincronizar')
+  @HttpCode(200)
+  sincronizarComprobantesPrevios(
     @CurrentUser() u: Usuario,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.cc.comprobantesPrevios(id, u.email);
+    return this.cc.sincronizarComprobantesPrevios(id, u.email);
   }
 
   @Post('imputaciones')

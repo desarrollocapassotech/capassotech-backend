@@ -3,6 +3,12 @@
 // Facturador, ids, comprobantes sin emitir) llegue al cliente por agregarlo a la cuenta.
 
 interface ImputacionCuenta {
+  pagoId: string;
+  cargoId: string;
+  importe: number;
+  importePago: number;
+  monedaCargo?: string;
+  monedaPago?: string;
   documento: 'factura' | 'recibo' | null;
   comprobanteTipo: string | null;
   comprobanteNumero: string | null;
@@ -22,6 +28,11 @@ interface MovimientoCuenta {
   lineas: Array<{ descripcion: string; cantidad: string; importe: number }>;
   monedaOrigen: string | null;
   saldosAcumulados: Record<string, number>;
+  comprobantesPrevios: Array<{
+    tipo: string | null;
+    numero: string | null;
+    ambiente: string | null;
+  }>;
   imputaciones: ImputacionCuenta[];
 }
 
@@ -53,15 +64,36 @@ export function cuentaParaPortal(c: Cuenta) {
       })),
       monedaLineas: m.monedaOrigen ?? m.moneda,
       // Solo lo emitido y vigente: un comprobante rechazado o deshecho no es del cliente.
-      comprobantes: m.imputaciones
-        .filter(
-          (i) =>
-            i.documento && !i.deshecha && i.comprobanteEstado === 'EMITIDO',
-        )
+      comprobantes: [
+        // Una factura de prueba (homologación) no tiene validez fiscal: tampoco es del cliente.
+        ...m.comprobantesPrevios
+          .filter((c) => c.ambiente !== 'HOMOLOGACION')
+          .map((c) => ({
+            documento: 'factura' as const,
+            tipo: c.tipo,
+            numero: c.numero,
+          })),
+        ...m.imputaciones
+          .filter(
+            (i) =>
+              i.documento && !i.deshecha && i.comprobanteEstado === 'EMITIDO',
+          )
+          .map((i) => ({
+            documento: i.documento,
+            tipo: i.comprobanteTipo,
+            numero: i.comprobanteNumero,
+          })),
+      ],
+      // Solo los importes vigentes: con eso lo cancelado se ve igual que en administración.
+      imputaciones: m.imputaciones
+        .filter((i) => !i.deshecha)
         .map((i) => ({
-          documento: i.documento,
-          tipo: i.comprobanteTipo,
-          numero: i.comprobanteNumero,
+          pagoId: i.pagoId,
+          cargoId: i.cargoId,
+          importe: i.importe,
+          importePago: i.importePago,
+          monedaCargo: i.monedaCargo,
+          monedaPago: i.monedaPago,
         })),
     })),
   };

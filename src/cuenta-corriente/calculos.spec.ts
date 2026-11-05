@@ -1,9 +1,13 @@
 import {
+  adicionalesValidos,
   calcularImputacion,
   calcularSaldos,
+  comprobantePrevioDe,
   conceptoDeCuota,
   convertir,
   cuotasAGenerar,
+  facturasDeItems,
+  facturaVigente,
   fechaDeCuota,
   lineasDelComprobante,
   mesesCerrados,
@@ -156,6 +160,73 @@ describe('mesesCerrados', () => {
   });
   it('arrancar en el mes actual no genera nada', () => {
     expect(mesesCerrados('2026-11', '2026-11-05')).toEqual([]);
+  });
+});
+
+describe('facturas hechas por fuera', () => {
+  const c = {
+    id: 'f1',
+    tipo: 'FACTURA_C',
+    estado: 'EMITIDO',
+    ambiente: 'PRODUCCION',
+    puntoVenta: 1,
+    numero: 12,
+    moneda: 'ARS',
+    importes: { total: '3057600.00' },
+    notas: [],
+  };
+  it('varias líneas en la misma factura cuentan una sola vez', () => {
+    expect(
+      facturasDeItems([
+        { estado: 'FACTURADO', comprobanteId: 'f1' },
+        { estado: 'FACTURADO', comprobanteId: 'f1' },
+        { estado: 'FACTURADO', comprobanteId: 'f2' },
+      ]),
+    ).toEqual(['f1', 'f2']);
+  });
+  it('un borrador o un ítem sin comprobante no cuentan', () => {
+    expect(
+      facturasDeItems([
+        { estado: 'EN_BORRADOR', comprobanteId: 'f1' },
+        { estado: 'VALIDO', comprobanteId: null },
+        { estado: 'FACTURADO', comprobanteId: null },
+      ]),
+    ).toEqual([]);
+  });
+  it('una factura anulada ya no está vigente', () => {
+    expect(facturaVigente(c)).toBe(true);
+    expect(facturaVigente({ ...c, estado: 'ANULADO' })).toBe(false);
+    expect(facturaVigente({ ...c, notas: [{ estado: 'EMITIDO' }] })).toBe(false);
+    // Una nota rechazada no anuló nada.
+    expect(facturaVigente({ ...c, notas: [{ estado: 'RECHAZADO' }] })).toBe(true);
+  });
+  it('guarda lo que hace falta para mostrarla', () => {
+    expect(comprobantePrevioDe(c)).toEqual({
+      comprobanteId: 'f1',
+      tipo: 'FACTURA_C',
+      numero: '00001-00000012',
+      total: 3057600,
+      moneda: 'ARS',
+      ambiente: 'PRODUCCION',
+    });
+  });
+});
+
+describe('adicionalesValidos', () => {
+  it('sin adicionales da una lista vacía', () => {
+    expect(adicionalesValidos(undefined)).toEqual([]);
+  });
+  it('limpia y redondea', () => {
+    expect(
+      adicionalesValidos([{ descripcion: ' Bono ', importe: '100.555' }]),
+    ).toEqual([{ descripcion: 'Bono', importe: 100.56 }]);
+  });
+  it('rechaza lo mal cargado', () => {
+    expect(adicionalesValidos([{ descripcion: '', importe: 10 }])).toBeNull();
+    expect(
+      adicionalesValidos([{ descripcion: 'Bono', importe: 0 }]),
+    ).toBeNull();
+    expect(adicionalesValidos('Bono')).toBeNull();
   });
 });
 
