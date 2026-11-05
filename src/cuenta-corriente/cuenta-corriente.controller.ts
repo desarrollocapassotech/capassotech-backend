@@ -11,6 +11,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Res,
   UseGuards,
 } from '@nestjs/common';
@@ -64,6 +65,11 @@ export class CuentaCorrienteController {
     @Body() body: { mesInicio?: unknown },
   ) {
     return this.cc.guardarConfig(body?.mesInicio, u.email);
+  }
+
+  @Get('cargos-del-mes')
+  cargosDelMes(@Query('mes') mes?: string) {
+    return this.cc.cargosDelMes(mes);
   }
 
   @Get('cuentas/:side')

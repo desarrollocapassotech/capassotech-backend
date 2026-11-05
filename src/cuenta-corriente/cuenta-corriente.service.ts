@@ -16,6 +16,7 @@ import {
   BillingCurrency,
   CcConfigEntity,
   CcImputationEntity,
+  CcInstallmentPlanEntity,
   CcMovementEntity,
   ClientEntity,
   CollaboratorEntity,
@@ -37,7 +38,9 @@ import { datosCliente, MES, nombreMes, rangoMes } from '../facturacion/resumen';
 import {
   calcularImputacion,
   calcularSaldos,
+  conceptoDeCuota,
   convertir,
+  cuotasAGenerar,
   EPS,
   lineasDelComprobante,
   mesesCerrados,
@@ -129,6 +132,8 @@ export interface DatosMovimiento {
   tipoCambio?: unknown;
   emitir?: unknown;
   fechaEmision?: unknown;
+  /** Cargo en cuotas: `importe` es el de cada una y `fecha`, la de la primera. */
+  cuotas?: unknown;
 }
 
 export interface DatosImputacion {
@@ -152,6 +157,8 @@ export class CuentaCorrienteService {
     private readonly movimientos: Repository<CcMovementEntity>,
     @InjectRepository(CcImputationEntity)
     private readonly imputaciones: Repository<CcImputationEntity>,
+    @InjectRepository(CcInstallmentPlanEntity)
+    private readonly planes: Repository<CcInstallmentPlanEntity>,
     @InjectRepository(ClientEntity)
     private readonly clientes: Repository<ClientEntity>,
     @InjectRepository(CollaboratorEntity)
@@ -249,6 +256,7 @@ export class CuentaCorrienteService {
     const advertencias = mesInicio
       ? await this.generarCargosDelLado(side, mesInicio)
       : [];
+    await this.generarCuotas({ side });
 
     const movimientos = await this.movimientos.findBy({ side });
     const ids = movimientos.map((m) => m.id);
@@ -343,6 +351,7 @@ export class CuentaCorrienteService {
     const advertencias = mesInicio
       ? await this.generarCargos(side, id, mesInicio)
       : [];
+    await this.generarCuotas({ side, ...this.dondeCuenta(side, id) });
 
     const movimientos = await this.movimientos.find({
       where: this.dondeCuenta(side, id),
@@ -948,10 +957,127 @@ export class CuentaCorrienteService {
     return { id: creado.id };
   }
 
+  /**
+   * Crea las cuotas de los planes que ya llegaron a su fecha (idempotente: se llama al abrir las
+   * cuentas). Así la siguiente cuota aparece sola, sin que nadie tenga que cargarla.
+   */
+  private async generarCuotas(donde: {
+    side: CcSide;
+    clientId?: string;
+    collaboratorId?: string;
+  }) {
+    const planes = await this.planes.findBy({ ...donde, canceledAt: IsNull() });
+    if (!planes.length) return;
+    const existentes = await this.movimientos.findBy({
+      planId: In(planes.map((p) => p.id)),
+    });
+    const hoy = hoyArgentina();
+    for (const plan of planes) {
+      const numeros = existentes
+        .filter((m) => m.planId === plan.id && m.cuotaNumero != null)
+        .map((m) => m.cuotaNumero as number);
+      for (const { numero, fecha } of cuotasAGenerar(plan, numeros, hoy)) {
+        await this.movimientos
+          .createQueryBuilder()
+          .insert()
+          .values({
+            side: plan.side,
+            clientId: plan.clientId,
+            collaboratorId: plan.collaboratorId,
+            tipo: 'cargo',
+            origen: 'cuota',
+            planId: plan.id,
+            cuotaNumero: numero,
+            concept: conceptoDeCuota(numero, plan.totalCuotas, plan.concept),
+            amount: plan.amount,
+            currency: plan.currency,
+            date: fecha,
+            dueDate: fecha,
+            createdBy: plan.createdBy,
+          })
+          .orIgnore()
+          .execute();
+      }
+    }
+  }
+
+  /** Crea un plan de cuotas. Reintentar con la misma clave no crea otro. */
+  private async crearPlanCuotas(
+    dto: DatosMovimiento,
+    cuotas: number,
+    side: CcSide,
+    id: string,
+    clave: string,
+    email?: string,
+  ) {
+    const previo = await this.planes.findOneBy({ idempotencyKey: clave });
+    if (previo) return { id: previo.id, imputaciones: [] };
+    await this.asegurarExiste(side, id);
+    if (!Number.isInteger(cuotas) || cuotas < 2 || cuotas > 60) {
+      throw new BadRequestException(
+        'La cantidad de cuotas debe ser un número entero entre 2 y 60.',
+      );
+    }
+    if (dto.tipo !== 'cargo') {
+      throw new BadRequestException('Solo un cargo puede ir en cuotas.');
+    }
+    if (!monedaValida(dto.moneda)) {
+      throw new BadRequestException('moneda debe ser USD o ARS.');
+    }
+    const concepto =
+      typeof dto.concepto === 'string' ? dto.concepto.trim() : '';
+    if (!concepto) throw new BadRequestException('Poné el concepto del cargo.');
+    const plan = await this.planes.save(
+      this.planes.create({
+        side,
+        ...this.dondeCuenta(side, id),
+        concept: concepto,
+        amount: importeValido(dto.importe).toFixed(2),
+        currency: dto.moneda,
+        totalCuotas: cuotas,
+        firstDate: fechaValida(dto.fecha),
+        idempotencyKey: clave,
+        createdBy: email ?? null,
+      }),
+    );
+    await this.generarCuotas({ side, ...this.dondeCuenta(side, id) });
+    return { id: plan.id, imputaciones: [] };
+  }
+
+  /** Lo cargado a mano y en cuotas de un mes: el Panel de administración lo suma a lo que se cobra. */
+  async cargosDelMes(mes: unknown) {
+    if (typeof mes !== 'string' || !MES.test(mes)) {
+      throw new BadRequestException('El mes debe tener formato yyyy-MM.');
+    }
+    await this.generarCuotas({ side: 'cliente' });
+    const { desde, hasta } = rangoMes(mes);
+    const filas = await this.movimientos.findBy({
+      side: 'cliente',
+      tipo: 'cargo',
+      origen: In(['manual', 'cuota']),
+      date: Between(desde, hasta),
+    });
+    return filas.map((m) => ({
+      clienteId: m.clientId,
+      importe: Number(m.amount),
+      moneda: m.currency,
+    }));
+  }
+
   /** Cargo manual o pago. Un pago con `imputarACargoIds` se imputa del cargo más viejo al más nuevo. */
   async crearMovimiento(dto: DatosMovimiento, clave: string, email?: string) {
     const previo = await this.movimientos.findOneBy({ idempotencyKey: clave });
     const { side, id } = this.validarCuenta(dto?.side, dto?.cuentaId);
+    if (dto.cuotas !== undefined && Number(dto.cuotas) > 1) {
+      return this.crearPlanCuotas(
+        dto,
+        Number(dto.cuotas),
+        side,
+        id,
+        clave,
+        email,
+      );
+    }
     const cargoIds = Array.isArray(dto.imputarACargoIds)
       ? dto.imputarACargoIds.filter((x): x is string => typeof x === 'string')
       : [];
@@ -1026,7 +1152,11 @@ export class CuentaCorrienteService {
   async eliminarMovimiento(id: string) {
     const m = await this.movimientos.findOneBy({ id });
     if (!m) throw new NotFoundException('Movimiento no encontrado.');
-    if (m.origen !== 'manual' && m.origen !== 'saldo_inicial') {
+    if (
+      m.origen !== 'manual' &&
+      m.origen !== 'saldo_inicial' &&
+      m.origen !== 'cuota'
+    ) {
       throw new BadRequestException(
         'Los cargos del mes y sus ajustes se generan solos: no se eliminan a mano.',
       );
@@ -1044,6 +1174,10 @@ export class CuentaCorrienteService {
     }
     if (propias.length) {
       await this.imputaciones.delete({ id: In(propias.map((i) => i.id)) });
+    }
+    // Sin esto, la cuota borrada volvería a generarse sola: se frenan esta y las que faltan.
+    if (m.planId) {
+      await this.planes.update({ id: m.planId }, { canceledAt: new Date() });
     }
     await this.movimientos.delete({ id });
   }

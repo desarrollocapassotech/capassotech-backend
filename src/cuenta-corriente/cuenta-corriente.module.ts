@@ -5,6 +5,7 @@ import { CollaboratorsModule } from '../collaborators/collaborators.module';
 import {
   CcConfigEntity,
   CcImputationEntity,
+  CcInstallmentPlanEntity,
   CcMovementEntity,
   ClientEntity,
   CollaboratorEntity,
@@ -24,6 +25,7 @@ import { CuentaCorrienteService } from './cuenta-corriente.service';
       CcConfigEntity,
       CcMovementEntity,
       CcImputationEntity,
+      CcInstallmentPlanEntity,
       ClientEntity,
       CollaboratorEntity,
       CollaboratorProjectRateEntity,

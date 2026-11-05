@@ -9,7 +9,7 @@ import {
 
 export type CcSide = 'cliente' | 'colaborador';
 export type CcTipo = 'cargo' | 'pago' | 'credito';
-export type CcOrigen = 'mes' | 'ajuste' | 'saldo_inicial' | 'manual';
+export type CcOrigen = 'mes' | 'ajuste' | 'saldo_inicial' | 'manual' | 'cuota';
 export type CcMoneda = 'USD' | 'ARS';
 
 /** Línea del detalle de un cargo: de ahí salen los conceptos del comprobante. */
@@ -43,6 +43,52 @@ export class CcConfigEntity {
   updatedAt: Date;
 }
 
+// tracker.cc_installment_plans: un cargo en cuotas. Cada cuota es un movimiento que aparece solo
+// cuando llega su fecha. Cancelar el plan frena las que faltan.
+@Entity({ name: 'cc_installment_plans', schema: 'tracker' })
+export class CcInstallmentPlanEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'text' })
+  side: CcSide;
+
+  @Column({ name: 'client_id', type: 'text', nullable: true })
+  clientId: string | null;
+
+  @Column({ name: 'collaborator_id', type: 'text', nullable: true })
+  collaboratorId: string | null;
+
+  @Column({ type: 'text' })
+  concept: string;
+
+  /** Importe de cada cuota. */
+  @Column({ type: 'numeric', precision: 14, scale: 2 })
+  amount: string;
+
+  @Column({ type: 'text' })
+  currency: CcMoneda;
+
+  @Column({ name: 'total_cuotas', type: 'int' })
+  totalCuotas: number;
+
+  /** Fecha de la primera cuota: las siguientes caen el mismo día de cada mes. */
+  @Column({ name: 'first_date', type: 'date' })
+  firstDate: string;
+
+  @Column({ name: 'canceled_at', type: 'timestamptz', nullable: true })
+  canceledAt: Date | null;
+
+  @Column({ name: 'idempotency_key', type: 'text', nullable: true })
+  idempotencyKey: string | null;
+
+  @Column({ name: 'created_by', type: 'text', nullable: true })
+  createdBy: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+}
+
 // tracker.cc_movements: cargos (Debe), pagos y créditos (Haber) de una cuenta. Los cargos del
 // mes se generan solos desde las horas y los abonos; el resto se carga a mano.
 @Entity({ name: 'cc_movements', schema: 'tracker' })
@@ -68,6 +114,13 @@ export class CcMovementEntity {
   /** Mes del cargo (yyyy-MM); null en lo cargado a mano. */
   @Column({ type: 'text', nullable: true })
   month: string | null;
+
+  /** Cuota de un plan: cuál es y de qué plan. */
+  @Column({ name: 'plan_id', type: 'uuid', nullable: true })
+  planId: string | null;
+
+  @Column({ name: 'cuota_numero', type: 'int', nullable: true })
+  cuotaNumero: number | null;
 
   /** Ajuste: el cargo del mes que corrige. */
   @Column({ name: 'parent_id', type: 'uuid', nullable: true })
