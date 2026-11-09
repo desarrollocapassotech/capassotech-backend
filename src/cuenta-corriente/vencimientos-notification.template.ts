@@ -28,7 +28,7 @@ export function vencimientosSubject(cargos: CargoQueVence[]): string {
     cobros ? `${cobros} ${cobros === 1 ? 'cobro' : 'cobros'}` : '',
     pagos ? `${pagos} ${pagos === 1 ? 'pago' : 'pagos'}` : '',
   ].filter(Boolean);
-  return `Hoy vencen ${partes.join(' y ')} de la cuenta corriente`;
+  return `Hoy ${cargos.length === 1 ? 'vence' : 'vencen'} ${partes.join(' y ')} de la cuenta corriente`;
 }
 
 function seccion(titulo: string, cargos: CargoQueVence[]): string {

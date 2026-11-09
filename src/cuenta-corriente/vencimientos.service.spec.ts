@@ -90,6 +90,6 @@ describe('VencimientosService', () => {
 describe('vencimientosSubject', () => {
   it('nombra solo lo que hay', () => {
     expect(vencimientosSubject([cobro, { ...cobro, id: 'm3' }])).toBe('Hoy vencen 2 cobros de la cuenta corriente');
-    expect(vencimientosSubject([pago])).toBe('Hoy vencen 1 pago de la cuenta corriente');
+    expect(vencimientosSubject([pago])).toBe('Hoy vence 1 pago de la cuenta corriente');
   });
 });
