@@ -96,7 +96,8 @@ export class ProjectsService {
   // - cliente: solo sus propias condiciones, en cualquier proyecto (las necesita para
   //   mostrar sus horas facturables), y la configuración de horas de los proyectos
   //   donde tiene condiciones o es dueño.
-  // - el resto: nada.
+  // - el resto (colaboradores): las condiciones sin montos, con `cobraHoras`, para elegir a qué
+  //   cliente se le cobra una hora de un producto.
   // rate, currency y billingType del proyecto ya no se usan (se eliminan en una
   // migración posterior): no salen nunca.
   async maskRatesForRequester(projects: ProjectResponse[], requester: RequesterContext): Promise<ProjectResponse[]> {
@@ -129,13 +130,26 @@ export class ProjectsService {
       if (managedProjectIds?.has(project.id)) {
         return project;
       }
-      const propias =
-        ownClientId !== null ? project.billingTerms.filter((t) => t.clientId === ownClientId) : [];
-      const vinculado = ownClientId !== null && (project.clientId === ownClientId || propias.length > 0);
+      if (ownClientId !== null) {
+        const propias = project.billingTerms.filter((t) => t.clientId === ownClientId);
+        const vinculado = project.clientId === ownClientId || propias.length > 0;
+        return {
+          ...project,
+          billingTerms: propias,
+          billableConfig: vinculado ? project.billableConfig : null,
+        };
+      }
+      // Colaboradores: sin montos, solo qué clientes pagan horas en un producto (para elegir a
+      // quién se le cobra una hora al cargarla).
       return {
         ...project,
-        billingTerms: propias,
-        billableConfig: vinculado ? project.billableConfig : null,
+        billingTerms: project.billingTerms.map((t) => ({
+          ...t,
+          monthlyAmount: null,
+          hourlyRate: null,
+          cobraHoras: t.hourlyRate != null,
+        })),
+        billableConfig: null,
       };
     });
   }
