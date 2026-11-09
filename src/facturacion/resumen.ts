@@ -1,8 +1,12 @@
-// Qué hay para facturar en un mes, con la misma regla que Ingresos (IncomeManagement):
-// - Proyecto por hora: horas facturables del mes (redondeadas para arriba a la media hora) × tarifa del proyecto.
-// - Proyecto mensual (activo): 1 abono × tarifa del proyecto.
-// Se factura siempre en pesos: lo de proyectos en USD se pasa a ARS con el tipo de cambio del
-// mes (el que recibe). Función pura: no consulta la base ni el Facturador.
+// Qué hay para facturar en un mes, según las condiciones de cobro vigentes de cada cliente:
+// - Suscripción (proyecto activo): 1 mes × el monto.
+// - Tarifa por hora: horas facturables del cliente en el proyecto (redondeadas para arriba a la
+//   media hora) × la tarifa.
+// Una condición puede tener las dos. Se factura siempre en pesos: lo que está en USD se pasa a
+// ARS con el tipo de cambio del mes (el que recibe). Función pura: no consulta la base ni el
+// Facturador. Los montos fijos únicos no pasan por acá: son cargos sueltos de la cuenta corriente.
+
+import { vigente, type CondicionCobro } from '../projects/condiciones';
 
 const MESES = [
   'Enero',
@@ -113,9 +117,7 @@ export interface ProyectoTracker {
   id: string;
   name: string;
   active: boolean;
-  rate: number | null;
-  currency: string | null;
-  billingType: string | null;
+  /** Dueño; null = proyecto propio. */
   clientId: string | null;
 }
 
@@ -124,6 +126,8 @@ export interface RegistroFacturable {
   date: string;
   billableHours: string;
   projectId: string;
+  /** Cliente al que se le cobra la hora (el dueño o el marcado); null = interna. */
+  clientId: string | null;
 }
 
 export interface DatosCliente {
@@ -211,88 +215,122 @@ export function armarResumen(
   mes: string,
   registros: RegistroFacturable[],
   proyectos: ProyectoTracker[],
+  condiciones: CondicionCobro[],
   clientes: ClienteTracker[],
-  /** Pesos por dólar con que se pasan a ARS los proyectos en USD. */
+  /** Pesos por dólar con que se pasan a ARS las condiciones en USD. */
   cotizacionUsd: number,
 ): Resumen {
   const periodo = rangoMes(mes);
   const texto = nombreMes(mes);
   const clientePorId = new Map(clientes.map((c) => [c.id, c]));
+  const proyectoPorId = new Map(proyectos.map((p) => [p.id, p]));
   const advertencias: string[] = [];
 
+  // Horas facturables del mes por proyecto y cliente responsable.
+  const clave = (proyectoId: string, clienteId: string) =>
+    `${proyectoId}|${clienteId}`;
   const horas = new Map<string, number>();
   for (const r of registros) {
-    if (!r.date.startsWith(mes)) continue;
-    horas.set(
-      r.projectId,
-      (horas.get(r.projectId) ?? 0) + Number(r.billableHours || 0),
-    );
+    if (!r.date.startsWith(mes) || !r.clientId) continue;
+    const k = clave(r.projectId, r.clientId);
+    horas.set(k, (horas.get(k) ?? 0) + Number(r.billableHours || 0));
   }
 
   const lineas: LineaResumen[] = [];
-  const sinCliente = new Set<string>();
-  for (const p of proyectos) {
-    const mensual = p.billingType === 'monthly';
-    if (mensual ? !p.active : !horas.has(p.id)) continue;
-    const cantidadHoras = mediaHoraArriba(horas.get(p.id) ?? 0);
-    if (!mensual && Number(cantidadHoras) <= 0) continue;
-    const cliente = p.clientId ? clientePorId.get(p.clientId) : undefined;
-    if (!cliente) {
-      sinCliente.add(p.name);
-      continue;
-    }
-    const tarifa = p.rate != null && p.rate > 0 ? p.rate : null;
-    if (mensual && !tarifa) continue; // como Ingresos: un abono sin monto no se cobra
-    const cantidad = mensual ? '1' : limpio(cantidadHoras);
-    const enUsd = p.currency !== 'ARS';
-    const precioArs =
-      tarifa != null ? dos(enUsd ? tarifa * cotizacionUsd : tarifa) : null;
-    lineas.push({
-      referencia: `tracker:${cliente.id}:${p.id}:${mes}`,
-      clienteId: cliente.id,
-      proyecto: {
-        id: p.id,
-        nombre: p.name,
-        tipo: mensual ? 'monthly' : 'hourly',
-      },
-      descripcion: mensual
-        ? `${p.name} - Abono ${texto}`
-        : `${p.name} - Horas ${texto}`,
-      cantidad,
-      unidad: mensual ? 'MES' : 'HORA',
-      precioUnitario: precioArs != null ? limpio(precioArs) : null,
-      moneda: 'ARS',
-      importe:
-        precioArs != null ? dos(Number(cantidad) * Number(precioArs)) : null,
-      original:
-        enUsd && tarifa != null
+  const delMes = condiciones.filter((c) => vigente(c, mes));
+  for (const c of delMes) {
+    const p = proyectoPorId.get(c.projectId);
+    const cliente = clientePorId.get(c.clientId);
+    if (!p || !cliente) continue;
+    const enUsd = c.currency !== 'ARS';
+    const linea = (
+      tipo: 'monthly' | 'hourly',
+      cantidad: string,
+      tarifa: number,
+      referencia: string,
+    ): LineaResumen => {
+      const precioArs = dos(enUsd ? tarifa * cotizacionUsd : tarifa);
+      return {
+        referencia,
+        clienteId: cliente.id,
+        proyecto: { id: p.id, nombre: p.name, tipo },
+        descripcion:
+          tipo === 'monthly'
+            ? `${p.name} - Abono ${texto}`
+            : `${p.name} - Horas ${texto}`,
+        cantidad,
+        unidad: tipo === 'monthly' ? 'MES' : 'HORA',
+        precioUnitario: limpio(precioArs),
+        moneda: 'ARS',
+        importe: dos(Number(cantidad) * Number(precioArs)),
+        original: enUsd
           ? {
               moneda: 'USD',
               precioUnitario: limpio(tarifa.toFixed(2)),
               importe: dos(Number(cantidad) * tarifa),
             }
           : null,
-      periodo,
-      problema:
-        tarifa == null
-          ? 'El proyecto no tiene tarifa por hora en el tracker.'
-          : null,
-    });
+        periodo,
+        problema: null,
+      };
+    };
+    // La primera línea de la condición conserva la referencia de siempre en el Facturador
+    // (así se siguen encontrando las facturas hechas por fuera); la segunda lleva sufijo.
+    const base = `tracker:${cliente.id}:${p.id}:${mes}`;
+    // Como hasta ahora con el abono: un proyecto inactivo no cobra suscripción.
+    if (c.monthlyAmount != null && p.active) {
+      lineas.push(linea('monthly', '1', c.monthlyAmount, base));
+    }
+    if (c.hourlyRate != null) {
+      const cantidad = mediaHoraArriba(horas.get(clave(p.id, cliente.id)) ?? 0);
+      if (Number(cantidad) > 0) {
+        lineas.push(
+          linea(
+            'hourly',
+            limpio(cantidad),
+            c.hourlyRate,
+            c.monthlyAmount != null ? `${base}:horas` : base,
+          ),
+        );
+      }
+    }
   }
-  if (sinCliente.size) {
+
+  // Horas marcadas para un cliente que no tiene tarifa por hora en ese proyecto: no se cobran.
+  const sinTarifa = new Set<string>();
+  for (const [k, h] of horas) {
+    if (h <= 0) continue;
+    const [proyectoId, clienteId] = k.split('|');
+    const p = proyectoPorId.get(proyectoId);
+    if (!p || p.clientId) continue; // en un proyecto con dueño, las horas sin tarifa son normales
+    const c = delMes.find(
+      (x) => x.projectId === proyectoId && x.clientId === clienteId,
+    );
+    if (c?.hourlyRate == null) {
+      sinTarifa.add(
+        `${p.name} (${clientePorId.get(clienteId)?.name ?? clienteId})`,
+      );
+    }
+  }
+  if (sinTarifa.size) {
     advertencias.push(
-      `Proyectos sin cliente en el tracker (no se facturan): ${[...sinCliente].join(', ')}.`,
+      `Horas marcadas para un cliente sin tarifa por hora en el proyecto (no se cobran): ${[...sinTarifa].join(', ')}.`,
     );
   }
 
   lineas.sort(
     (a, b) =>
       a.clienteId.localeCompare(b.clienteId) ||
-      a.proyecto.nombre.localeCompare(b.proyecto.nombre),
+      a.proyecto.nombre.localeCompare(b.proyecto.nombre) ||
+      a.referencia.localeCompare(b.referencia),
   );
   const ids = new Set(lineas.map((l) => l.clienteId));
-  // También los que tienen un proyecto activo aunque no haya horas (se factura con líneas a mano).
+  // También los que tienen un proyecto activo, propio o con condición vigente, aunque no haya
+  // horas (se factura con líneas a mano).
   for (const p of proyectos) if (p.active && p.clientId) ids.add(p.clientId);
+  for (const c of delMes) {
+    if (proyectoPorId.get(c.projectId)?.active) ids.add(c.clientId);
+  }
   return {
     mes,
     // También los que no tienen proyectos activos pero sí conceptos fijos: se les factura igual.

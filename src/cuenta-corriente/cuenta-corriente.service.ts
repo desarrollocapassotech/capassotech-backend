@@ -28,6 +28,7 @@ import {
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
+  ProjectEntity,
   TimeEntryEntity,
   type CcComprobantePrevio,
   type CcDetalle,
@@ -194,6 +195,8 @@ export interface DatosMovimiento {
   fechaEmision?: unknown;
   /** Cargo en cuotas: `importe` es el de cada una y `fecha`, la de la primera. */
   cuotas?: unknown;
+  /** Cargo suelto de un cliente: el proyecto al que corresponde (opcional). */
+  proyectoId?: unknown;
   /** Pago a un colaborador: horas extra o bonos que se agregan al recibo. `importe` los incluye. */
   adicionales?: unknown;
   /** Cobro de un cliente: comprobante emitido afuera, en vez de emitir uno desde acá. */
@@ -307,6 +310,25 @@ export class CuentaCorrienteService {
         ? await this.clientes.existsBy({ id })
         : await this.colaboradores.existsBy({ id });
     if (!existe) throw new NotFoundException('Cuenta no encontrada.');
+  }
+
+  /** Proyecto de un cargo suelto o plan de cuotas de un cliente; null si no se eligió. */
+  private async proyectoDe(dto: DatosMovimiento, side: CcSide) {
+    const v = dto.proyectoId;
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v !== 'string') {
+      throw new BadRequestException('proyectoId no es válido.');
+    }
+    if (side !== 'cliente' || dto.tipo !== 'cargo') {
+      throw new BadRequestException(
+        'El proyecto solo se indica en los cargos a clientes.',
+      );
+    }
+    const existe = await this.movimientos.manager
+      .getRepository(ProjectEntity)
+      .existsBy({ id: v });
+    if (!existe) throw new NotFoundException('Proyecto no encontrado.');
+    return v;
   }
 
   private dondeCuenta(side: CcSide, id: string) {
@@ -580,6 +602,7 @@ export class CuentaCorrienteService {
       origen: m.origen,
       mes: m.month,
       parentId: m.parentId,
+      proyectoId: m.projectId,
       concepto: m.concept,
       importe,
       moneda: m.currency,
@@ -780,6 +803,7 @@ export class CuentaCorrienteService {
         cantidad: l.unidad === 'HORA' ? `${l.cantidad} h` : `${l.cantidad} mes`,
         importe: Number(l.original ? l.original.importe : l.importe),
         referencia: l.referencia,
+        proyectoId: l.proyecto.id,
       });
     }
     // Los conceptos fijos están en pesos si se le factura; en la moneda del cliente si es recibo.
@@ -1120,6 +1144,7 @@ export class CuentaCorrienteService {
             tipo: 'cargo',
             origen: 'cuota',
             planId: plan.id,
+            projectId: plan.projectId,
             cuotaNumero: numero,
             concept: conceptoDeCuota(numero, plan.totalCuotas, plan.concept),
             amount: plan.amount,
@@ -1160,10 +1185,12 @@ export class CuentaCorrienteService {
     const concepto =
       typeof dto.concepto === 'string' ? dto.concepto.trim() : '';
     if (!concepto) throw new BadRequestException('Poné el concepto del cargo.');
+    const projectId = await this.proyectoDe(dto, side);
     const plan = await this.planes.save(
       this.planes.create({
         side,
         ...this.dondeCuenta(side, id),
+        projectId,
         concept: concepto,
         amount: importeValido(dto.importe).toFixed(2),
         currency: dto.moneda,
@@ -1202,6 +1229,7 @@ export class CuentaCorrienteService {
     return {
       cargos: filas.map((m) => ({
         clienteId: m.clientId,
+        proyectoId: m.projectId,
         importe: Number(m.amount),
         moneda: m.currency,
       })),
@@ -1210,6 +1238,64 @@ export class CuentaCorrienteService {
         moneda: m.currency,
       })),
     };
+  }
+
+  /**
+   * Para el aviso diario de vencimientos: los cargos de los dos lados que vencen `fecha` y siguen
+   * con algo pendiente (descontados créditos e imputaciones vigentes). Antes genera los cargos del
+   * mes y las cuotas, que si no solo aparecen al abrir las cuentas.
+   */
+  async cargosQueVencen(fecha: string) {
+    const { mesInicio } = await this.obtenerConfig();
+    for (const side of ['cliente', 'colaborador'] as const) {
+      if (mesInicio) await this.generarCargosDelLado(side, mesInicio);
+      await this.generarCuotas({ side });
+    }
+    const cargos = await this.movimientos.findBy({
+      tipo: 'cargo',
+      dueDate: fecha,
+    });
+    if (!cargos.length) return [];
+    const ids = cargos.map((c) => c.id);
+    const [imputaciones, creditos, clientes, colaboradores] = await Promise.all(
+      [
+        this.imputaciones.findBy({ cargoId: In(ids), reversedAt: IsNull() }),
+        this.movimientos.findBy({ parentId: In(ids), tipo: 'credito' }),
+        this.clientes.find(),
+        this.colaboradores.find(),
+      ],
+    );
+    const nombres = new Map<string, string>([
+      ...clientes.map((c) => [c.id, c.name] as [string, string]),
+      ...colaboradores.map((c) => [c.id, c.name] as [string, string]),
+    ]);
+    return cargos
+      .map((m) => {
+        const cancelado =
+          imputaciones
+            .filter((i) => i.cargoId === m.id)
+            .reduce((t, i) => t + Number(i.amount), 0) +
+          creditos
+            .filter((c) => c.parentId === m.id)
+            .reduce((t, c) => t + Number(c.amount), 0);
+        const cuentaId = (m.clientId ?? m.collaboratorId) as string;
+        return {
+          id: m.id,
+          side: m.side,
+          cuentaId,
+          cuenta: nombres.get(cuentaId) ?? 'Cuenta sin nombre',
+          concepto: m.concept,
+          importe: Number(m.amount),
+          pendiente: Math.max(0, redondear(Number(m.amount) - cancelado)),
+          moneda: m.currency,
+          vencimiento: fecha,
+        };
+      })
+      .filter((c) => c.pendiente > EPS)
+      .sort(
+        (a, b) =>
+          a.side.localeCompare(b.side) || a.cuenta.localeCompare(b.cuenta),
+      );
   }
 
   /** Cargo manual o pago. Un pago con `imputarACargoIds` se imputa del cargo más viejo al más nuevo. */
@@ -1271,10 +1357,12 @@ export class CuentaCorrienteService {
       }
       const texto = (v: unknown) =>
         typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null;
+      const projectId = await this.proyectoDe(dto, side);
       mov = await this.movimientos.save(
         this.movimientos.create({
           side,
           ...this.dondeCuenta(side, id),
+          projectId,
           tipo: dto.tipo,
           origen: 'manual',
           concept: concepto || (side === 'cliente' ? 'Cobro' : 'Pago'),
@@ -1416,7 +1504,10 @@ export class CuentaCorrienteService {
     return creada ? this.presentarImputacion(creada) : null;
   }
 
-  /** Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. */
+  /**
+   * Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. Sus imputaciones
+   * sin comprobante se borran con él, y lo que cubrían vuelve a quedar pendiente.
+   */
   async eliminarMovimiento(id: string) {
     const m = await this.movimientos.findOneBy({ id });
     if (!m) throw new NotFoundException('Movimiento no encontrado.');
@@ -1432,14 +1523,12 @@ export class CuentaCorrienteService {
     const propias = await this.imputaciones.find({
       where: [{ pagoId: id }, { cargoId: id }],
     });
-    if (propias.some((i) => !i.reversedAt)) {
-      throw new ConflictException('Primero deshacé sus imputaciones.');
-    }
     if (propias.some((i) => i.comprobanteId || i.documento)) {
       throw new ConflictException(
         'Tiene comprobantes emitidos: queda en la cuenta como registro.',
       );
     }
+    // Sin comprobantes, sus imputaciones (vigentes o deshechas) se van con él: no dejan rastro fiscal.
     if (propias.length) {
       await this.imputaciones.delete({ id: In(propias.map((i) => i.id)) });
     }

@@ -28,6 +28,11 @@ export class TimeEntryEntity {
   @Column({ name: 'project_name', type: 'text' })
   projectName: string;
 
+  // Solo en proyectos propios: a qué cliente se le cobra esta hora. Null = interna (o, en un
+  // proyecto con dueño, del dueño).
+  @Column({ name: 'client_id', type: 'text', nullable: true })
+  clientId: string | null;
+
   // Día calendario (medianoche local), no timestamp.
   @Column({ type: 'date' })
   date: string;

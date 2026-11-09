@@ -6,10 +6,11 @@ import {
   BillingCurrency,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
-  ProjectBillingType,
+  ProjectBillingTermEntity,
   ProjectEntity,
   TimeEntryEntity,
 } from '../database/entities';
+import { clienteDeHora, condicionDeEntidad, condicionDelMes, vigente } from '../projects/condiciones';
 import { CollaboratorPerformanceResponseDto, OutlierTaskDto, QuarterMetricDto } from './collaborator-performance.dto';
 
 const QUARTER_WINDOW = 4;
@@ -211,14 +212,19 @@ export class CollaboratorPerformanceService {
     }
 
     const projectIds = [...new Set(entries.map((e) => e.projectId))];
-    const [projects, rateOverrides] = await Promise.all([
+    const [projects, rateOverrides, condiciones] = await Promise.all([
       this.projectRepository.findBy({ id: In(projectIds) }),
       this.projectRateRepository.findBy({ collaboratorId: collaborator.id, projectId: In(projectIds) }),
+      this.projectRepository.manager
+        .getRepository(ProjectBillingTermEntity)
+        .findBy({ projectId: In(projectIds) })
+        .then((xs) => xs.map(condicionDeEntidad)),
     ]);
     const projectById = new Map(projects.map((p) => [p.id, p]));
     const overrideByProject = new Map(rateOverrides.map((r) => [r.projectId, Number(r.hourlyRate)]));
 
-    const monthlyProjectIds = projects.filter((p) => p.billingType === ProjectBillingType.MONTHLY).map((p) => p.id);
+    // Las suscripciones se reparten entre todas las horas del proyecto en el mes.
+    const monthlyProjectIds = [...new Set(condiciones.filter((c) => c.monthlyAmount != null).map((c) => c.projectId))];
     const monthlyTotalsByKey = await this.loadMonthlyProjectTotals(monthlyProjectIds, windowStart, windowEnd);
 
     const usdRateCache = new Map<string, number>();
@@ -252,16 +258,33 @@ export class CollaboratorPerformanceService {
       const costUsd = await toUsd(hours * collaboratorRate, collaborator.currency, month);
       const costArs = await toArs(hours * collaboratorRate, collaborator.currency, month);
 
-      let revenueLocal = 0;
-      if (project.billingType === ProjectBillingType.MONTHLY) {
-        const totalHoursForMonth = monthlyTotalsByKey.get(`${project.id}:${month}`) ?? hours;
-        const share = totalHoursForMonth > 0 ? hours / totalHoursForMonth : 0;
-        revenueLocal = share * Number(project.rate ?? 0);
-      } else {
-        revenueLocal = hours * Number(project.rate ?? 0);
+      // Ingreso de la hora según las condiciones de cobro del mes: su parte de las suscripciones
+      // del proyecto (de todos los clientes) y, si se cobra por hora, la tarifa del cliente de la hora.
+      let revenueUsd = 0;
+      let revenueArs = 0;
+      const sumar = async (monto: number, moneda: 'USD' | 'ARS') => {
+        const currency = moneda === 'ARS' ? BillingCurrency.ARS : BillingCurrency.USD;
+        revenueUsd += await toUsd(monto, currency, month);
+        revenueArs += await toArs(monto, currency, month);
+      };
+      const totalHoursForMonth = monthlyTotalsByKey.get(`${project.id}:${month}`) ?? hours;
+      const share = totalHoursForMonth > 0 ? hours / totalHoursForMonth : 0;
+      if (project.active) {
+        for (const c of condiciones) {
+          if (c.projectId === project.id && c.monthlyAmount != null && vigente(c, month)) {
+            await sumar(share * c.monthlyAmount, c.currency);
+          }
+        }
       }
-      const revenueUsd = await toUsd(revenueLocal, project.currency, month);
-      const revenueArs = await toArs(revenueLocal, project.currency, month);
+      const condicion = condicionDelMes(
+        condiciones,
+        project.id,
+        clienteDeHora(project.clientId, entry.clientId),
+        month,
+      );
+      if (condicion?.hourlyRate != null) {
+        await sumar(hours * condicion.hourlyRate, condicion.currency);
+      }
 
       bucket.hours += hours;
       bucket.costUsd += costUsd;

@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { CollaboratorsModule } from '../collaborators/collaborators.module';
 import {
   CcConfigEntity,
+  CcDueReminderEntity,
   CcImputationEntity,
   CcInstallmentPlanEntity,
   CcMovementEntity,
@@ -18,11 +19,14 @@ import { FacturacionModule } from '../facturacion/facturacion.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { CuentaCorrienteController } from './cuenta-corriente.controller';
 import { CuentaCorrienteService } from './cuenta-corriente.service';
+import { VencimientosService } from './vencimientos.service';
+import { ResendService } from '../common/resend.service';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       CcConfigEntity,
+      CcDueReminderEntity,
       CcMovementEntity,
       CcImputationEntity,
       CcInstallmentPlanEntity,
@@ -39,6 +43,6 @@ import { CuentaCorrienteService } from './cuenta-corriente.service';
     IntegrationsModule,
   ],
   controllers: [CuentaCorrienteController],
-  providers: [CuentaCorrienteService],
+  providers: [CuentaCorrienteService, VencimientosService, ResendService],
 })
 export class CuentaCorrienteModule {}

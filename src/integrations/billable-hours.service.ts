@@ -5,10 +5,17 @@ import {
   ClientEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
+  ProjectBillingTermEntity,
   ProjectEntity,
   TimeEntryEntity,
 } from '../database/entities';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
+import {
+  clienteDeHora,
+  condicionDeEntidad,
+  condicionDelMes,
+  proyectoFacturable,
+} from '../projects/condiciones';
 import {
   BillableCollaborator,
   billableHoursForEntry,
@@ -94,6 +101,8 @@ export class BillableHoursService {
     private readonly collaborators: Repository<CollaboratorEntity>,
     @InjectRepository(CollaboratorProjectRateEntity)
     private readonly projectRates: Repository<CollaboratorProjectRateEntity>,
+    @InjectRepository(ProjectBillingTermEntity)
+    private readonly terms: Repository<ProjectBillingTermEntity>,
     private readonly exchangeRate: ExchangeRateService,
   ) {}
 
@@ -121,19 +130,27 @@ export class BillableHoursService {
       .where('te.date BETWEEN :from AND :to', { from, to })
       .orderBy('te.date', 'ASC')
       .addOrderBy('te.id', 'ASC');
-    if (clientId) qb.andWhere('p.client_id = :clientId', { clientId });
+    // Las horas de un cliente: las de sus proyectos y las de proyectos propios marcadas para él.
+    if (clientId)
+      qb.andWhere('(p.client_id = :clientId OR te.client_id = :clientId)', {
+        clientId,
+      });
     const rows = await qb.getMany();
 
     const projectIds = [...new Set(rows.map((r) => r.projectId))];
-    const projects = projectIds.length
-      ? await this.projects.findBy({ id: In(projectIds) })
-      : [];
+    const [projects, condiciones] = projectIds.length
+      ? await Promise.all([
+          this.projects.findBy({ id: In(projectIds) }),
+          this.terms
+            .findBy({ projectId: In(projectIds) })
+            .then((xs) => xs.map(condicionDeEntidad)),
+        ])
+      : [[], []];
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    const clienteDe = (e: TimeEntryEntity) =>
+      clienteDeHora(projectById.get(e.projectId)?.clientId, e.clientId);
     const clientIds = [
-      ...new Set(
-        projects
-          .map((p) => p.clientId)
-          .filter((id): id is string => Boolean(id)),
-      ),
+      ...new Set(rows.map(clienteDe).filter((id): id is string => !!id)),
     ];
     const clients = clientIds.length
       ? await this.clients.findBy({ id: In(clientIds) })
@@ -156,7 +173,6 @@ export class BillableHoursService {
         })
       : [];
 
-    const projectById = new Map(projects.map((p) => [p.id, p]));
     const clientById = new Map(clients.map((c) => [c.id, c]));
     const collaboratorByKey = new Map<
       string,
@@ -193,15 +209,18 @@ export class BillableHoursService {
 
     const entries = rows.map((e): BillableHoursEntry => {
       const p = projectById.get(e.projectId);
-      const project = p
-        ? {
-            id: p.id,
-            rate: p.rate != null ? Number(p.rate) : undefined,
-            currency: p.currency ?? undefined,
-            billingType: p.billingType ?? undefined,
-          }
-        : undefined;
-      const client = p?.clientId ? clientById.get(p.clientId) : undefined;
+      const responsable = clienteDe(e);
+      const client = responsable ? clientById.get(responsable) : undefined;
+      // La tarifa sale de la condición de cobro vigente ese mes para ese cliente.
+      const project = proyectoFacturable(
+        e.projectId,
+        condicionDelMes(
+          condiciones,
+          e.projectId,
+          responsable,
+          e.date.slice(0, 7),
+        ),
+      );
       const collaborator = collaboratorByKey.get(e.collaboratorId);
       const usdRate = usdRateByMonth.get(e.date.slice(0, 7)) ?? 1;
       const { billableHours, details } = billableHoursForEntry(
@@ -209,7 +228,7 @@ export class BillableHoursService {
         project,
         collaborator,
         usdRate,
-        client ?? null,
+        { billableConfig: p?.billableConfig },
         e.taskBillingType,
       );
 
@@ -240,7 +259,7 @@ export class BillableHoursService {
         project: {
           id: e.projectId,
           name: p?.name ?? e.projectName,
-          billingType: p?.billingType ?? null,
+          billingType: project.billingType ?? null,
         },
         client: client
           ? {

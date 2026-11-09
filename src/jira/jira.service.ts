@@ -2,7 +2,7 @@ import { BadGatewayException, Injectable, Logger, NotFoundException } from '@nes
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ClientEntity, ProjectEntity } from '../database/entities';
+import { ProjectEntity } from '../database/entities';
 import { JiraConnection, JiraConnectionSummary, JiraIssueSummary } from './jira.dto';
 
 interface JiraApiIssueResponse {
@@ -39,8 +39,6 @@ export class JiraService {
     configService: ConfigService,
     @InjectRepository(ProjectEntity)
     private readonly projectRepository: Repository<ProjectEntity>,
-    @InjectRepository(ClientEntity)
-    private readonly clientRepository: Repository<ClientEntity>,
   ) {
     this.connectionsByKey = this.parseConnections(configService.get<string>('JIRA_CONNECTIONS'));
   }
@@ -49,24 +47,19 @@ export class JiraService {
     return [...this.connectionsByKey.values()].map(({ key, baseUrl }) => ({ key, baseUrl }));
   }
 
-  // Resuelve proyecto -> cliente -> conexión de Jira, y devuelve el issue.
-  // Null (en vez de excepción) cuando el proyecto/cliente no tiene Jira
-  // configurado: el frontend usa esto para no autocompletar sin romper el form.
+  // Resuelve proyecto -> conexión de Jira, y devuelve el issue.
+  // Null (en vez de excepción) cuando el proyecto no tiene Jira configurado: el
+  // frontend usa esto para no autocompletar sin romper el form.
   async getIssueForProject(projectId: string, issueKey: string): Promise<JiraIssueSummary | null> {
     const project = await this.projectRepository.findOneBy({ id: projectId });
-    if (!project?.clientId) {
+    if (!project?.jiraConnectionKey) {
       return null;
     }
 
-    const client = await this.clientRepository.findOneBy({ id: project.clientId });
-    if (!client?.jiraConnectionKey) {
-      return null;
-    }
-
-    const connection = this.connectionsByKey.get(client.jiraConnectionKey);
+    const connection = this.connectionsByKey.get(project.jiraConnectionKey);
     if (!connection) {
       this.logger.warn(
-        `El cliente ${client.id} referencia la conexión Jira "${client.jiraConnectionKey}", que no existe en JIRA_CONNECTIONS.`,
+        `El proyecto ${project.id} referencia la conexión Jira "${project.jiraConnectionKey}", que no existe en JIRA_CONNECTIONS.`,
       );
       return null;
     }

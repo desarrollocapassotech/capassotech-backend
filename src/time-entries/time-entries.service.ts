@@ -5,7 +5,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { IsNull, Repository } from 'typeorm';
 import { UserRole } from '../auth/auth.types';
-import { CollaboratorEntity, ProjectEntity, TaskBillingType, TimeEntryEntity } from '../database/entities';
+import {
+  ClientEntity,
+  CollaboratorEntity,
+  ProjectBillingTermEntity,
+  ProjectEntity,
+  TaskBillingType,
+  TimeEntryEntity,
+} from '../database/entities';
+import { condicionDeEntidad, condicionDelMes } from '../projects/condiciones';
 import { CreateTimeEntryDto, UpdateTimeEntryDto } from './time-entries.dto';
 
 export interface SheetSyncRunResult {
@@ -49,6 +57,23 @@ export class TimeEntriesService {
 
   findAll(): Promise<TimeEntryEntity[]> {
     return this.timeEntryRepository.find({ order: { date: 'DESC' } });
+  }
+
+  async findAllFor(requester: RequesterContext): Promise<TimeEntryEntity[]> {
+    const soloCliente =
+      requester.roles.includes(UserRole.CLIENT) &&
+      !requester.roles.some((r) => r !== UserRole.CLIENT);
+    if (!soloCliente) return this.findAll();
+    const client = await this.projectRepository.manager
+      .getRepository(ClientEntity)
+      .findOneBy({ userId: requester.uid });
+    if (!client) return [];
+    return this.timeEntryRepository
+      .createQueryBuilder('te')
+      .innerJoin(ProjectEntity, 'p', 'p.id = te.project_id')
+      .where('(p.client_id = :id OR te.client_id = :id)', { id: client.id })
+      .orderBy('te.date', 'DESC')
+      .getMany();
   }
 
   async findOne(id: string): Promise<TimeEntryEntity> {
@@ -98,6 +123,7 @@ export class TimeEntriesService {
       taskBillingType: dto.taskBillingType ?? TaskBillingType.FEATURE,
       storyPoints: dto.storyPoints != null ? String(dto.storyPoints) : null,
     });
+    entry.clientId = await this.clienteDeLaHora(project, dto.clientId ?? null, entry.date);
 
     const saved = await this.timeEntryRepository.save(entry);
 
@@ -124,8 +150,9 @@ export class TimeEntriesService {
       existing.collaboratorName = collaborator.name;
     }
 
+    let project: ProjectEntity | null = null;
     if (dto.projectId !== undefined) {
-      const project = await this.projectRepository.findOneBy({ id: dto.projectId });
+      project = await this.projectRepository.findOneBy({ id: dto.projectId });
       if (!project) {
         throw new BadRequestException('El proyecto indicado no existe.');
       }
@@ -142,6 +169,15 @@ export class TimeEntriesService {
     if (dto.storyPoints !== undefined) {
       existing.storyPoints = dto.storyPoints == null ? null : String(dto.storyPoints);
     }
+    // El cliente de la hora se vuelve a validar si cambia él, el proyecto o la fecha (la
+    // condición vigente depende del mes).
+    if (dto.clientId !== undefined || dto.projectId !== undefined || dto.date !== undefined) {
+      project ??= await this.projectRepository.findOneBy({ id: existing.projectId });
+      // Si la hora se pasa a un proyecto que no es producto, pierde el cliente marcado.
+      const pedido =
+        dto.clientId !== undefined ? dto.clientId : project?.kind === 'producto' ? existing.clientId : null;
+      existing.clientId = await this.clienteDeLaHora(project, pedido, existing.date);
+    }
 
     return this.timeEntryRepository.save(existing);
   }
@@ -151,6 +187,34 @@ export class TimeEntriesService {
     if (result.affected === 0) {
       throw new NotFoundException('Registro de horas no encontrado.');
     }
+  }
+
+  /**
+   * A qué cliente se le cobra una hora: solo se marca en productos, y solo para un cliente con
+   * tarifa por hora vigente ese mes en el producto. En cualquier otro proyecto queda null (en un
+   * proyecto de cliente, la hora es del dueño).
+   */
+  private async clienteDeLaHora(
+    project: ProjectEntity | null,
+    clientId: string | null,
+    date: string,
+  ): Promise<string | null> {
+    if (!clientId) return null;
+    if (project?.kind !== 'producto') {
+      throw new BadRequestException('Solo las horas de un producto se marcan para un cliente.');
+    }
+    const condiciones = (
+      await this.projectRepository.manager
+        .getRepository(ProjectBillingTermEntity)
+        .findBy({ projectId: project.id, clientId })
+    ).map(condicionDeEntidad);
+    const condicion = condicionDelMes(condiciones, project.id, clientId, date.slice(0, 7));
+    if (condicion?.hourlyRate == null) {
+      throw new BadRequestException(
+        'Ese cliente no tiene tarifa por hora en este producto para el mes de la hora.',
+      );
+    }
+    return clientId;
   }
 
   private validateBasicFields(dto: CreateTimeEntryDto): void {

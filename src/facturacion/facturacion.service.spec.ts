@@ -5,6 +5,7 @@ import type { Repository } from 'typeorm';
 import type {
   ClientEntity,
   ClientReceiptEntity,
+  ProjectBillingTermEntity,
   ProjectEntity,
 } from '../database/entities';
 import type { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
@@ -208,6 +209,39 @@ const proyectos = [
     clientId: 'c3',
   },
 ];
+// Lo mismo que los proyectos de arriba, como condiciones de cobro.
+const condiciones = [
+  {
+    id: 't1',
+    projectId: 'p1',
+    clientId: 'c1',
+    desde: '2025-01',
+    hasta: null,
+    currency: 'USD',
+    monthlyAmount: null,
+    hourlyRate: '40.00',
+  },
+  {
+    id: 't2',
+    projectId: 'p2',
+    clientId: 'c2',
+    desde: '2025-01',
+    hasta: null,
+    currency: 'ARS',
+    monthlyAmount: '100000.00',
+    hourlyRate: null,
+  },
+  {
+    id: 't3',
+    projectId: 'p3',
+    clientId: 'c3',
+    desde: '2025-01',
+    hasta: null,
+    currency: 'USD',
+    monthlyAmount: null,
+    hourlyRate: '30.00',
+  },
+];
 const clientesTracker = [
   {
     id: 'c1',
@@ -245,9 +279,24 @@ function servicio(
   const horas = {
     listar: jest.fn().mockResolvedValue({
       entries: [
-        { date: '2026-09-03', billableHours: '5.5', project: { id: 'p1' } },
-        { date: '2026-09-04', billableHours: '2', project: { id: 'p1' } },
-        { date: '2026-09-04', billableHours: '3', project: { id: 'p3' } },
+        {
+          date: '2026-09-03',
+          billableHours: '5.5',
+          project: { id: 'p1' },
+          client: { id: 'c1' },
+        },
+        {
+          date: '2026-09-04',
+          billableHours: '2',
+          project: { id: 'p1' },
+          client: { id: 'c1' },
+        },
+        {
+          date: '2026-09-04',
+          billableHours: '3',
+          project: { id: 'p3' },
+          client: { id: 'c3' },
+        },
       ],
     }),
   } as unknown as BillableHoursService;
@@ -286,6 +335,9 @@ function servicio(
       return Promise.resolve({});
     }),
   } as unknown as Repository<ClientReceiptEntity>;
+  const terminos = {
+    find: jest.fn().mockResolvedValue(condiciones),
+  } as unknown as Repository<ProjectBillingTermEntity>;
   return new FacturacionService(
     projects,
     clients,
@@ -293,6 +345,7 @@ function servicio(
     f.client,
     tipoDeCambio,
     recibos,
+    terminos,
   );
 }
 

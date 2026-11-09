@@ -19,9 +19,12 @@ export class TimeEntriesController {
     private readonly authService: AuthService,
   ) {}
 
+  // Un cliente solo recibe las horas de sus proyectos y las de productos marcadas para él: las
+  // de otros clientes y las internas no le llegan nunca.
   @Get()
-  findAll() {
-    return this.timeEntriesService.findAll();
+  async findAll(@CurrentUser() user: AuthenticatedRequest['user']) {
+    const requesterProfile = await this.authService.getProfile(user.uid, user.email);
+    return this.timeEntriesService.findAllFor({ uid: user.uid, roles: requesterProfile.roles });
   }
 
   // Estado de la sincronización con el Google Sheet de reporting: cuántas horas
