@@ -12,8 +12,10 @@ import { Repository } from 'typeorm';
 import {
   ClientEntity,
   ClientReceiptEntity,
+  ProjectBillingTermEntity,
   ProjectEntity,
 } from '../database/entities';
+import { condicionDeEntidad } from '../projects/condiciones';
 import { BillingCurrency } from '../database/entities/enums';
 import { ExchangeRateService } from '../exchange-rate/exchange-rate.service';
 import { BillableHoursService } from '../integrations/billable-hours.service';
@@ -101,6 +103,8 @@ export class FacturacionService {
     private readonly tipoDeCambio: ExchangeRateService,
     @InjectRepository(ClientReceiptEntity)
     private readonly recibos: Repository<ClientReceiptEntity>,
+    @InjectRepository(ProjectBillingTermEntity)
+    private readonly condiciones: Repository<ProjectBillingTermEntity>,
   ) {}
 
   // ── Resumen del mes ──────────────────────────────────────────────────────
@@ -120,28 +124,29 @@ export class FacturacionService {
   /** Lo facturable del mes: las líneas de Facturación son también los cargos de la cuenta corriente. */
   async calcular(mes: string) {
     const { desde, hasta } = rangoMes(mes);
-    const [horas, proyectos, clientes, cotizacion] = await Promise.all([
-      this.horas.listar(desde, hasta),
-      this.projects.find(),
-      this.clients.find(),
-      this.cotizacion(mes),
-    ]);
+    const [horas, proyectos, condiciones, clientes, cotizacion] =
+      await Promise.all([
+        this.horas.listar(desde, hasta),
+        this.projects.find(),
+        this.condiciones.find(),
+        this.clients.find(),
+        this.cotizacion(mes),
+      ]);
     const r = armarResumen(
       mes,
       horas.entries.map((e) => ({
         date: e.date,
         billableHours: e.billableHours,
         projectId: e.project.id,
+        clientId: e.client?.id ?? null,
       })),
       proyectos.map((p) => ({
         id: p.id,
         name: p.name,
         active: p.active,
-        rate: p.rate != null ? Number(p.rate) : null,
-        currency: p.currency,
-        billingType: p.billingType,
         clientId: p.clientId,
       })),
+      condiciones.map(condicionDeEntidad),
       clientes,
       cotizacion.valor,
     );

@@ -1,3 +1,4 @@
+import type { CondicionCobro } from '../projects/condiciones';
 import {
   armarResumen,
   condicionIvaDeTexto,
@@ -5,6 +6,7 @@ import {
   datosCliente,
   type ClienteTracker,
   type ProyectoTracker,
+  type RegistroFacturable,
 } from './resumen';
 
 const cliente = (o: Partial<ClienteTracker> = {}): ClienteTracker => ({
@@ -22,9 +24,31 @@ const proyecto = (o: Partial<ProyectoTracker> = {}): ProyectoTracker => ({
   id: 'p1',
   name: 'Web',
   active: true,
-  rate: 40,
+  clientId: 'c1',
+  ...o,
+});
+
+let n = 0;
+const condicion = (o: Partial<CondicionCobro> = {}): CondicionCobro => ({
+  id: `t${++n}`,
+  projectId: 'p1',
+  clientId: 'c1',
+  desde: '2025-01',
+  hasta: null,
   currency: 'USD',
-  billingType: 'hourly',
+  monthlyAmount: null,
+  hourlyRate: 40,
+  ...o,
+});
+
+const hora = (
+  date: string,
+  billableHours: string,
+  o: Partial<RegistroFacturable> = {},
+): RegistroFacturable => ({
+  date,
+  billableHours,
+  projectId: 'p1',
   clientId: 'c1',
   ...o,
 });
@@ -41,8 +65,9 @@ describe('armarResumen', () => {
     (horas, cantidad) => {
       const r = armarResumen(
         '2026-09',
-        [{ date: '2026-09-02', billableHours: horas, projectId: 'p1' }],
+        [hora('2026-09-02', horas)],
         [proyecto()],
+        [condicion()],
         [cliente()],
         1000,
       );
@@ -54,26 +79,28 @@ describe('armarResumen', () => {
     const r = armarResumen(
       '2026-09',
       [
-        { date: '2026-09-02', billableHours: '0.1', projectId: 'p1' },
-        { date: '2026-09-03', billableHours: '0.2', projectId: 'p1' },
-        { date: '2026-09-04', billableHours: '0.2', projectId: 'p1' },
+        hora('2026-09-02', '0.1'),
+        hora('2026-09-03', '0.2'),
+        hora('2026-09-04', '0.2'),
       ],
       [proyecto()],
+      [condicion()],
       [cliente()],
       1000,
     );
     expect(r.lineas[0].cantidad).toBe('0.5');
   });
 
-  it('por hora: suma las horas facturables del mes × tarifa del proyecto, pasada a pesos', () => {
+  it('por hora: suma las horas facturables del mes × tarifa de la condición, pasada a pesos', () => {
     const r = armarResumen(
       '2026-09',
       [
-        { date: '2026-09-02', billableHours: '1.466667', projectId: 'p1' },
-        { date: '2026-09-20', billableHours: '2.5', projectId: 'p1' },
-        { date: '2026-10-01', billableHours: '9', projectId: 'p1' },
+        hora('2026-09-02', '1.466667'),
+        hora('2026-09-20', '2.5'),
+        hora('2026-10-01', '9'),
       ],
       [proyecto()],
+      [condicion()],
       [cliente()],
       1250.5,
     );
@@ -96,8 +123,9 @@ describe('armarResumen', () => {
   it('el precio en pesos se redondea a centavos antes de multiplicar por la cantidad', () => {
     const r = armarResumen(
       '2026-09',
-      [{ date: '2026-09-02', billableHours: '3', projectId: 'p1' }],
-      [proyecto({ rate: 20 })],
+      [hora('2026-09-02', '3')],
+      [proyecto()],
+      [condicion({ hourlyRate: 20 })],
       [cliente()],
       1234.5678,
     );
@@ -107,26 +135,29 @@ describe('armarResumen', () => {
     });
   });
 
-  it('mensual activo: un abono aunque no haya horas; inactivo o sin monto, nada', () => {
+  it('suscripción: un abono aunque no haya horas; proyecto inactivo, nada', () => {
     const r = armarResumen(
       '2026-02',
       [],
       [
-        proyecto({
-          id: 'm1',
-          name: 'Soporte',
-          billingType: 'monthly',
-          rate: 500000,
+        proyecto({ id: 'm1', name: 'Soporte' }),
+        proyecto({ id: 'm2', active: false }),
+      ],
+      [
+        condicion({
+          projectId: 'm1',
           currency: 'ARS',
+          monthlyAmount: 500000,
+          hourlyRate: null,
         }),
-        proyecto({ id: 'm2', billingType: 'monthly', active: false }),
-        proyecto({ id: 'm3', billingType: 'monthly', rate: null }),
+        condicion({ projectId: 'm2', monthlyAmount: 100, hourlyRate: null }),
       ],
       [cliente()],
       1000,
     );
     expect(r.lineas).toHaveLength(1);
     expect(r.lineas[0]).toMatchObject({
+      referencia: 'tracker:c1:m1:2026-02',
       descripcion: 'Soporte - Abono Febrero 2026',
       cantidad: '1',
       unidad: 'MES',
@@ -137,35 +168,134 @@ describe('armarResumen', () => {
     });
   });
 
-  it('proyecto por hora sin tarifa: aparece con el problema; sin cliente: advertencia', () => {
+  it('suscripción y horas en la misma condición: dos líneas, la de horas con sufijo', () => {
     const r = armarResumen(
       '2026-09',
+      [hora('2026-09-02', '5')],
+      [proyecto()],
       [
-        { date: '2026-09-02', billableHours: '2', projectId: 'p1' },
-        { date: '2026-09-02', billableHours: '3', projectId: 'p2' },
-      ],
-      [
-        proyecto({ rate: null }),
-        proyecto({ id: 'p2', name: 'Interno', clientId: null }),
+        condicion({
+          currency: 'ARS',
+          monthlyAmount: 25000,
+          hourlyRate: 10000,
+        }),
       ],
       [cliente()],
       1000,
     );
-    expect(r.lineas).toHaveLength(1);
-    expect(r.lineas[0]).toMatchObject({ precioUnitario: null, importe: null });
-    expect(r.lineas[0].problema).toMatch(/tarifa/);
-    expect(r.advertencias[0]).toMatch(/Interno/);
+    expect(r.lineas.map((l) => [l.referencia, l.unidad, l.importe])).toEqual([
+      ['tracker:c1:p1:2026-09', 'MES', '25000.00'],
+      ['tracker:c1:p1:2026-09:horas', 'HORA', '50000.00'],
+    ]);
+  });
+
+  it('solo cuentan las condiciones vigentes en el mes', () => {
+    const condiciones = [
+      condicion({ desde: '2026-01', hasta: '2026-08', hourlyRate: 20 }),
+      condicion({ desde: '2026-09', hourlyRate: 30 }),
+    ];
+    const horas = [hora('2026-08-10', '2'), hora('2026-09-10', '2')];
+    const precio = (mes: string) =>
+      armarResumen(mes, horas, [proyecto()], condiciones, [cliente()], 1)
+        .lineas[0].original?.precioUnitario;
+    expect(precio('2026-08')).toBe('20');
+    expect(precio('2026-09')).toBe('30');
+    expect(
+      armarResumen(
+        '2025-12',
+        [hora('2025-12-01', '2')],
+        [proyecto()],
+        condiciones,
+        [cliente()],
+        1,
+      ).lineas,
+    ).toEqual([]);
+  });
+
+  it('proyecto propio: cada cliente paga su suscripción y las horas marcadas para él', () => {
+    const vialto = proyecto({ id: 'v', name: 'Vialto', clientId: null });
+    const r = armarResumen(
+      '2026-11',
+      [
+        hora('2026-11-03', '4', { projectId: 'v', clientId: 'riedel' }),
+        hora('2026-11-04', '9', { projectId: 'v', clientId: null }), // interna
+      ],
+      [vialto],
+      [
+        condicion({
+          projectId: 'v',
+          clientId: 'lsf',
+          currency: 'ARS',
+          monthlyAmount: 50000,
+          hourlyRate: null,
+        }),
+        condicion({
+          projectId: 'v',
+          clientId: 'riedel',
+          currency: 'ARS',
+          monthlyAmount: 25000,
+          hourlyRate: 8000,
+        }),
+      ],
+      [
+        cliente({ id: 'lsf', name: 'LSF', razonSocial: 'LSF Cargas SAS' }),
+        cliente({ id: 'riedel', name: 'Riedel', razonSocial: 'Riedel SRL' }),
+      ],
+      1,
+    );
+    expect(r.lineas.map((l) => [l.clienteId, l.unidad, l.importe])).toEqual([
+      ['lsf', 'MES', '50000.00'],
+      ['riedel', 'MES', '25000.00'],
+      ['riedel', 'HORA', '32000.00'],
+    ]);
+    expect(r.advertencias).toEqual([]);
+  });
+
+  it('horas de un proyecto propio marcadas para un cliente sin tarifa: advertencia, no se cobran', () => {
+    const r = armarResumen(
+      '2026-11',
+      [hora('2026-11-03', '4', { projectId: 'v', clientId: 'lsf' })],
+      [proyecto({ id: 'v', name: 'Vialto', clientId: null })],
+      [
+        condicion({
+          projectId: 'v',
+          clientId: 'lsf',
+          currency: 'ARS',
+          monthlyAmount: 50000,
+          hourlyRate: null,
+        }),
+      ],
+      [cliente({ id: 'lsf', name: 'LSF' })],
+      1,
+    );
+    expect(r.lineas.map((l) => l.unidad)).toEqual(['MES']);
+    expect(r.advertencias[0]).toMatch(/Vialto \(LSF\)/);
+  });
+
+  it('las horas de un dueño sin tarifa por hora no generan línea ni advertencia', () => {
+    const r = armarResumen(
+      '2026-09',
+      [hora('2026-09-02', '3')],
+      [proyecto()],
+      [condicion({ currency: 'ARS', monthlyAmount: 25000, hourlyRate: null })],
+      [cliente()],
+      1,
+    );
+    expect(r.lineas.map((l) => l.unidad)).toEqual(['MES']);
+    expect(r.advertencias).toEqual([]);
   });
 
   it('devuelve los clientes con algo para facturar o con un proyecto activo, aunque no tengan horas', () => {
     const r = armarResumen(
       '2026-09',
-      [{ date: '2026-09-02', billableHours: '2', projectId: 'p1' }],
+      [hora('2026-09-02', '2')],
       [
         proyecto(),
-        proyecto({ id: 'p2', clientId: 'c2', billingType: 'monthly', rate: 0 }),
+        proyecto({ id: 'p2', clientId: 'c2' }),
         proyecto({ id: 'p3', clientId: 'c3', active: false }),
+        proyecto({ id: 'p4', clientId: null }),
       ],
+      [condicion(), condicion({ projectId: 'p4', clientId: 'c5' })],
       [
         cliente(),
         cliente({ id: 'c2', name: 'Otro', razonSocial: 'Otro SA' }),
@@ -175,10 +305,11 @@ describe('armarResumen', () => {
           name: 'Sin proyectos',
           razonSocial: 'Sin proyectos SA',
         }),
+        cliente({ id: 'c5', name: 'Suscripto', razonSocial: 'Suscripto SA' }),
       ],
       1000,
     );
-    expect(r.clientes.map((c) => c.id)).toEqual(['c1', 'c2']);
+    expect(r.clientes.map((c) => c.id)).toEqual(['c1', 'c2', 'c5']);
     expect(r.lineas.map((l) => l.clienteId)).toEqual(['c1']);
   });
 });
@@ -231,6 +362,7 @@ describe('conceptos fijos', () => {
       '2026-09',
       [],
       [proyecto({ active: false })],
+      [],
       [
         cliente(),
         cliente({ id: 'c2', name: 'Beta', billingConcepts: [hosting] }),

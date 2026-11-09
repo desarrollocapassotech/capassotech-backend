@@ -3,7 +3,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 /**
  * Condiciones de cobro: qué le cobra cada proyecto a cada cliente (suscripción, tarifa por hora o
  * las dos), en vez del tipo, la tarifa y la moneda del proyecto. `projects.client_id` pasa a ser el
- * dueño (null = proyecto propio).
+ * dueño (null = proyecto propio). `projects.kind` separa los proyectos de un cliente, los
+ * productos propios que se venden a varios clientes (Vialto, Faktia) y los internos.
  *
  * Solo agrega y copia: las columnas viejas (`projects.rate`, `currency`, `billing_type` y
  * `clients.billable_config`, `billable_hours_limit`, `jira_connection_key`) quedan hasta una
@@ -42,7 +43,12 @@ CREATE INDEX IF NOT EXISTS project_billing_terms_proyecto_idx
 
 ALTER TABLE tracker.projects
   ADD COLUMN IF NOT EXISTS billable_config JSONB,
-  ADD COLUMN IF NOT EXISTS jira_connection_key TEXT;
+  ADD COLUMN IF NOT EXISTS jira_connection_key TEXT,
+  ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'cliente'
+    CHECK (kind IN ('cliente', 'producto', 'interno'));
+
+-- Los proyectos sin dueño quedan como internos; los productos (Vialto, Faktia) se marcan a mano.
+UPDATE tracker.projects SET kind = 'interno' WHERE client_id IS NULL AND kind = 'cliente';
 
 ALTER TABLE tracker.time_entries
   ADD COLUMN IF NOT EXISTS client_id TEXT REFERENCES tracker.clients(id) ON DELETE RESTRICT;
@@ -78,7 +84,9 @@ SELECT
 FROM tracker.projects p
 WHERE p.client_id IS NOT NULL
   AND p.rate IS NOT NULL AND p.rate > 0
-  AND (p.billing_type::text IS DISTINCT FROM 'monthly' OR p.active)
+  -- Sin tipo, las horas facturables daban 0 (billable-hours.util): no cobraba nada.
+  AND p.billing_type IS NOT NULL
+  AND (p.billing_type::text = 'hourly' OR p.active)
   AND NOT EXISTS (
     SELECT 1 FROM tracker.project_billing_terms b WHERE b.project_id = p.id
   );
@@ -91,6 +99,7 @@ ALTER TABLE tracker.cc_installment_plans DROP COLUMN IF EXISTS project_id;
 ALTER TABLE tracker.cc_movements DROP COLUMN IF EXISTS project_id;
 ALTER TABLE tracker.time_entries DROP COLUMN IF EXISTS client_id;
 ALTER TABLE tracker.projects
+  DROP COLUMN IF EXISTS kind,
   DROP COLUMN IF EXISTS jira_connection_key,
   DROP COLUMN IF EXISTS billable_config;
 DROP TABLE IF EXISTS tracker.project_billing_terms;

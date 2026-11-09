@@ -1,12 +1,16 @@
-import { BillingCurrency, ProjectBillingType } from '../database/entities';
+import type { BillableHoursCalculationConfig } from '../database/entities/client.entity';
+import type { ProjectKind } from '../database/entities/project.entity';
 
+// Lo que se cobra no va acá: son las condiciones de cobro (billing-terms.service.ts).
 export interface CreateProjectDto {
   name: string;
   active?: boolean;
-  rate?: number | null;
-  currency?: BillingCurrency | null;
-  billingType?: ProjectBillingType | null;
+  /** cliente (con dueño), producto (Vialto, Faktia) o interno. Por defecto, cliente. */
+  kind?: ProjectKind;
+  /** Dueño del proyecto: obligatorio en los de cliente, vacío en productos e internos. */
   clientId?: string | null;
+  billableConfig?: Partial<BillableHoursCalculationConfig> | null;
+  jiraConnectionKey?: string | null;
   jiraIds?: string[];
   billableHoursLimit?: number | null;
   managerIds?: string[];

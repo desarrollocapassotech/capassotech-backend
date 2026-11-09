@@ -28,6 +28,7 @@ import {
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
+  ProjectEntity,
   TimeEntryEntity,
   type CcComprobantePrevio,
   type CcDetalle,
@@ -194,6 +195,8 @@ export interface DatosMovimiento {
   fechaEmision?: unknown;
   /** Cargo en cuotas: `importe` es el de cada una y `fecha`, la de la primera. */
   cuotas?: unknown;
+  /** Cargo suelto de un cliente: el proyecto al que corresponde (opcional). */
+  proyectoId?: unknown;
   /** Pago a un colaborador: horas extra o bonos que se agregan al recibo. `importe` los incluye. */
   adicionales?: unknown;
   /** Cobro de un cliente: comprobante emitido afuera, en vez de emitir uno desde acá. */
@@ -307,6 +310,25 @@ export class CuentaCorrienteService {
         ? await this.clientes.existsBy({ id })
         : await this.colaboradores.existsBy({ id });
     if (!existe) throw new NotFoundException('Cuenta no encontrada.');
+  }
+
+  /** Proyecto de un cargo suelto o plan de cuotas de un cliente; null si no se eligió. */
+  private async proyectoDe(dto: DatosMovimiento, side: CcSide) {
+    const v = dto.proyectoId;
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v !== 'string') {
+      throw new BadRequestException('proyectoId no es válido.');
+    }
+    if (side !== 'cliente' || dto.tipo !== 'cargo') {
+      throw new BadRequestException(
+        'El proyecto solo se indica en los cargos a clientes.',
+      );
+    }
+    const existe = await this.movimientos.manager
+      .getRepository(ProjectEntity)
+      .existsBy({ id: v });
+    if (!existe) throw new NotFoundException('Proyecto no encontrado.');
+    return v;
   }
 
   private dondeCuenta(side: CcSide, id: string) {
@@ -580,6 +602,7 @@ export class CuentaCorrienteService {
       origen: m.origen,
       mes: m.month,
       parentId: m.parentId,
+      proyectoId: m.projectId,
       concepto: m.concept,
       importe,
       moneda: m.currency,
@@ -780,6 +803,7 @@ export class CuentaCorrienteService {
         cantidad: l.unidad === 'HORA' ? `${l.cantidad} h` : `${l.cantidad} mes`,
         importe: Number(l.original ? l.original.importe : l.importe),
         referencia: l.referencia,
+        proyectoId: l.proyecto.id,
       });
     }
     // Los conceptos fijos están en pesos si se le factura; en la moneda del cliente si es recibo.
@@ -1120,6 +1144,7 @@ export class CuentaCorrienteService {
             tipo: 'cargo',
             origen: 'cuota',
             planId: plan.id,
+            projectId: plan.projectId,
             cuotaNumero: numero,
             concept: conceptoDeCuota(numero, plan.totalCuotas, plan.concept),
             amount: plan.amount,
@@ -1160,10 +1185,12 @@ export class CuentaCorrienteService {
     const concepto =
       typeof dto.concepto === 'string' ? dto.concepto.trim() : '';
     if (!concepto) throw new BadRequestException('Poné el concepto del cargo.');
+    const projectId = await this.proyectoDe(dto, side);
     const plan = await this.planes.save(
       this.planes.create({
         side,
         ...this.dondeCuenta(side, id),
+        projectId,
         concept: concepto,
         amount: importeValido(dto.importe).toFixed(2),
         currency: dto.moneda,
@@ -1202,6 +1229,7 @@ export class CuentaCorrienteService {
     return {
       cargos: filas.map((m) => ({
         clienteId: m.clientId,
+        proyectoId: m.projectId,
         importe: Number(m.amount),
         moneda: m.currency,
       })),
@@ -1329,10 +1357,12 @@ export class CuentaCorrienteService {
       }
       const texto = (v: unknown) =>
         typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null;
+      const projectId = await this.proyectoDe(dto, side);
       mov = await this.movimientos.save(
         this.movimientos.create({
           side,
           ...this.dondeCuenta(side, id),
+          projectId,
           tipo: dto.tipo,
           origen: 'manual',
           concept: concepto || (side === 'cliente' ? 'Cobro' : 'Pago'),

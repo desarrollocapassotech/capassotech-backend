@@ -21,7 +21,6 @@ import {
   ProjectCollaboratorRole,
   ProjectEntity,
 } from '../database/entities';
-import { normalizeBillableConfig } from './billable-config.util';
 import { CreateClientDto, UpdateClientDto } from './clients.dto';
 
 export interface RequesterContext {
@@ -52,17 +51,13 @@ export class ClientsService {
     'cuit',
     'ivaCondition',
     'billingCurrency',
-    'billableConfig',
     'analistaFuncionalIds',
     'profileImageUrl',
-    'billableHoursLimit',
-    'jiraConnectionKey',
   ];
 
-  // Un contable solo puede ajustar la configuración de horas facturables (igual
-  // que hoy en AdminTimeManagement/BillableAdjustForm.tsx). El resto de la ficha
-  // de ClientManagement.tsx es de solo lectura para contable.
-  private static readonly ACCOUNTANT_FIELDS: ClientField[] = ['billableConfig'];
+  // La ficha del cliente es de solo lectura para contable: la configuración de horas
+  // facturables, que es lo único que ajusta, ahora está en el proyecto.
+  private static readonly ACCOUNTANT_FIELDS: ClientField[] = [];
 
   // Un cliente editando su propio perfil (UserProfile.tsx) solo toca datos de
   // contacto/fiscales, nunca facturación ni la lista de analistas asignados.
@@ -116,15 +111,15 @@ export class ClientsService {
   }
 
   // GET /clients y GET /clients/:id quedan abiertos a cualquier autenticado (se
-  // usan en proyectos, historial, paneles de PM/QA), pero eso no debe filtrar el
-  // markup/config de facturación de un cliente a otro colaborador o a otro
-  // cliente. Ven este campo sin enmascarar: admin, contable, el propio cliente
-  // sobre su propio registro (ClientHistory.tsx necesita su billableConfig para
-  // explicar sus horas facturadas), y un project_manager sobre los clientes de
-  // los proyectos que gestiona (ProjectManagerPanel.tsx necesita billableConfig
-  // para calcular las horas facturables de su equipo). `managedClientIds` se
+  // usan en proyectos, historial, paneles de PM/QA), pero eso no debe filtrar los
+  // datos de facturación de un cliente a otro colaborador o a otro cliente. Los
+  // ven sin enmascarar: admin, contable, el propio cliente y un project_manager
+  // sobre los clientes de los proyectos que gestiona. `managedClientIds` se
   // resuelve una sola vez por request vía resolveManagedClientIds, no acá, para
   // no disparar una query por cliente en el listado.
+  //
+  // billableConfig, billableHoursLimit y jiraConnectionKey del cliente ya no se usan (pasaron
+  // al proyecto) y no salen nunca: las columnas se eliminan en una migración posterior.
   maskBillingForRequester(
     client: ClientResponse,
     requester: RequesterContext,
@@ -134,16 +129,21 @@ export class ClientsService {
     const isSelf = client.userId !== null && client.userId === requester.uid;
     const isManaged = managedClientIds.has(client.id);
 
+    const {
+      billableConfig: _config,
+      billableHoursLimit: _limite,
+      jiraConnectionKey: _jira,
+      ...vigente
+    } = client;
     if (isPrivileged || isSelf || isManaged) {
-      return client;
+      return vigente as ClientResponse;
     }
 
     const {
-      billableConfig: _billableConfig,
       billingConcepts: _billingConcepts,
       billingDocument: _billingDocument,
       ...masked
-    } = client;
+    } = vigente;
     return masked as ClientResponse;
   }
 
@@ -213,10 +213,7 @@ export class ClientsService {
       ivaCondition: dto.ivaCondition ?? null,
       password: dto.password ?? null,
       billingCurrency: this.normalizeCurrency(dto.billingCurrency),
-      billableConfig: normalizeBillableConfig(dto.billableConfig),
       profileImageUrl: dto.profileImageUrl ?? null,
-      billableHoursLimit: dto.billableHoursLimit != null ? String(dto.billableHoursLimit) : null,
-      jiraConnectionKey: dto.jiraConnectionKey ?? null,
     });
 
     const saved = await this.clientRepository.save(client);
@@ -244,14 +241,6 @@ export class ClientsService {
       switch (field) {
         case 'billingCurrency':
           if (dto.billingCurrency !== undefined) existing.billingCurrency = this.normalizeCurrency(dto.billingCurrency);
-          break;
-        case 'billableConfig':
-          if (dto.billableConfig !== undefined) existing.billableConfig = normalizeBillableConfig(dto.billableConfig);
-          break;
-        case 'billableHoursLimit':
-          if (dto.billableHoursLimit !== undefined) {
-            existing.billableHoursLimit = dto.billableHoursLimit == null ? null : String(dto.billableHoursLimit);
-          }
           break;
         case 'password':
           if (dto.password) {

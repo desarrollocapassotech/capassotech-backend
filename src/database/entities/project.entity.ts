@@ -2,6 +2,9 @@ import { Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } fro
 import type { BillableHoursCalculationConfig } from './client.entity';
 import { BillingCurrency, ProjectBillingType } from './enums';
 
+export type ProjectKind = 'cliente' | 'producto' | 'interno';
+export const PROJECT_KINDS: ProjectKind[] = ['cliente', 'producto', 'interno'];
+
 // tracker.projects <- Firestore /projects
 @Entity({ name: 'projects', schema: 'tracker' })
 export class ProjectEntity {
@@ -24,8 +27,13 @@ export class ProjectEntity {
   @Column({ name: 'billing_type', type: 'enum', enum: ProjectBillingType, enumName: 'project_billing_type', nullable: true })
   billingType: ProjectBillingType | null;
 
-  // Dueño del proyecto: ve sus horas en el portal y recibe las alertas. Null = proyecto propio
-  // (horas internas). Lo que se cobra no sale de acá sino de project_billing_terms.
+  // cliente: de un cliente (tiene dueño). producto: propio, se vende a varios clientes por
+  // suscripción (Vialto, Faktia). interno: propio, no se le cobra a nadie.
+  @Column({ type: 'text', default: 'cliente' })
+  kind: ProjectKind;
+
+  // Dueño del proyecto: ve sus horas en el portal y recibe las alertas. Null en productos e
+  // internos (horas propias). Lo que se cobra no sale de acá sino de project_billing_terms.
   @Column({ name: 'client_id', type: 'text', nullable: true })
   clientId: string | null;
 

@@ -8,6 +8,7 @@ import {
   ProjectDeliverableEntity,
   ProjectEntity,
 } from '../database/entities';
+import { BillingTermsService } from './billing-terms.service';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
 
@@ -23,7 +24,7 @@ import { ProjectsService } from './projects.service';
     AuthModule,
   ],
   controllers: [ProjectsController],
-  providers: [ProjectsService],
-  exports: [ProjectsService],
+  providers: [ProjectsService, BillingTermsService],
+  exports: [ProjectsService, BillingTermsService],
 })
 export class ProjectsModule {}
