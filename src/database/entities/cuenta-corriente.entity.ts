@@ -21,6 +21,8 @@ export interface CcLineaDetalle {
   importe: number;
   /** Referencia del ítem del mes en el Facturador (para saber si ya se facturó por otro lado). */
   referencia?: string;
+  /** Proyecto del que sale la línea: de acá se suma lo cobrado por proyecto. */
+  proyectoId?: string;
 }
 
 export interface CcDetalle {
@@ -70,6 +72,10 @@ export class CcInstallmentPlanEntity {
 
   @Column({ name: 'collaborator_id', type: 'text', nullable: true })
   collaboratorId: string | null;
+
+  /** Proyecto al que corresponde el plan; cada cuota lo hereda. */
+  @Column({ name: 'project_id', type: 'text', nullable: true })
+  projectId: string | null;
 
   @Column({ type: 'text' })
   concept: string;
@@ -133,6 +139,10 @@ export class CcMovementEntity {
 
   @Column({ name: 'cuota_numero', type: 'int', nullable: true })
   cuotaNumero: number | null;
+
+  /** Proyecto de un cargo suelto o cuota. En los cargos del mes va en cada línea del detalle. */
+  @Column({ name: 'project_id', type: 'text', nullable: true })
+  projectId: string | null;
 
   /** Ajuste: el cargo del mes que corrige. */
   @Column({ name: 'parent_id', type: 'uuid', nullable: true })
