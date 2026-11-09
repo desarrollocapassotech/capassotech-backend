@@ -1,6 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryColumn, UpdateDateColumn } from 'typeorm';
 import type { BillableHoursCalculationConfig } from './client.entity';
-import { BillingCurrency, ProjectBillingType } from './enums';
 
 export type ProjectKind = 'cliente' | 'producto' | 'interno';
 export const PROJECT_KINDS: ProjectKind[] = ['cliente', 'producto', 'interno'];
@@ -16,16 +15,6 @@ export class ProjectEntity {
 
   @Column({ type: 'boolean', default: true })
   active: boolean;
-
-  @Column({ type: 'numeric', precision: 12, scale: 2, nullable: true })
-  rate: string | null;
-
-  @Column({ type: 'enum', enum: BillingCurrency, enumName: 'billing_currency', nullable: true })
-  currency: BillingCurrency | null;
-
-  // Nullable: si falta, el frontend asume 'hourly' (misma regla que hoy, resuelta en la app).
-  @Column({ name: 'billing_type', type: 'enum', enum: ProjectBillingType, enumName: 'project_billing_type', nullable: true })
-  billingType: ProjectBillingType | null;
 
   // cliente: de un cliente (tiene dueño). producto: propio, se vende a varios clientes por
   // suscripción (Vialto, Faktia). interno: propio, no se le cobra a nadie.

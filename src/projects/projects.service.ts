@@ -98,12 +98,8 @@ export class ProjectsService {
   //   donde tiene condiciones o es dueño.
   // - el resto (colaboradores): las condiciones sin montos, con `cobraHoras`, para elegir a qué
   //   cliente se le cobra una hora de un producto.
-  // rate, currency y billingType del proyecto ya no se usan (se eliminan en una
-  // migración posterior): no salen nunca.
   async maskRatesForRequester(projects: ProjectResponse[], requester: RequesterContext): Promise<ProjectResponse[]> {
-    const sinLegado = projects.map(
-      ({ rate: _rate, currency: _currency, billingType: _tipo, ...p }) => p as ProjectResponse,
-    );
+    const sinLegado = projects;
     const isPrivileged = requester.roles.includes(UserRole.ADMIN) || requester.roles.includes(UserRole.CONTABLE);
     if (isPrivileged) {
       return sinLegado;

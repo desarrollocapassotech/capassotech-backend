@@ -117,9 +117,6 @@ export class ClientsService {
   // sobre los clientes de los proyectos que gestiona. `managedClientIds` se
   // resuelve una sola vez por request vía resolveManagedClientIds, no acá, para
   // no disparar una query por cliente en el listado.
-  //
-  // billableConfig, billableHoursLimit y jiraConnectionKey del cliente ya no se usan (pasaron
-  // al proyecto) y no salen nunca: las columnas se eliminan en una migración posterior.
   maskBillingForRequester(
     client: ClientResponse,
     requester: RequesterContext,
@@ -129,21 +126,15 @@ export class ClientsService {
     const isSelf = client.userId !== null && client.userId === requester.uid;
     const isManaged = managedClientIds.has(client.id);
 
-    const {
-      billableConfig: _config,
-      billableHoursLimit: _limite,
-      jiraConnectionKey: _jira,
-      ...vigente
-    } = client;
     if (isPrivileged || isSelf || isManaged) {
-      return vigente as ClientResponse;
+      return client;
     }
 
     const {
       billingConcepts: _billingConcepts,
       billingDocument: _billingDocument,
       ...masked
-    } = vigente;
+    } = client;
     return masked as ClientResponse;
   }
 
