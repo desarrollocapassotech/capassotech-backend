@@ -110,6 +110,36 @@ export function calcularSaldos(
   return { porFila, finales: acumulado };
 }
 
+/**
+ * El vencimiento más antiguo entre los cargos con algo pendiente (descontados créditos e
+ * imputaciones), aunque ya haya pasado: una cuota vencida sin imputar es lo más urgente.
+ */
+export function proximoVencimientoSinImputar(
+  movimientos: Array<{
+    id: string;
+    tipo: 'cargo' | 'pago' | 'credito';
+    parentId: string | null;
+    importe: number;
+    vencimiento: string | null;
+  }>,
+  imputaciones: Array<{ cargoId: string; importeCargo: number }>,
+): string | null {
+  const cancelado = new Map<string, number>();
+  const sumar = (cargoId: string, n: number) =>
+    cancelado.set(cargoId, (cancelado.get(cargoId) ?? 0) + n);
+  for (const i of imputaciones) sumar(i.cargoId, i.importeCargo);
+  for (const m of movimientos) {
+    if (m.tipo === 'credito' && m.parentId) sumar(m.parentId, m.importe);
+  }
+  let proximo: string | null = null;
+  for (const m of movimientos) {
+    if (m.tipo !== 'cargo' || !m.vencimiento) continue;
+    if (redondear(m.importe - (cancelado.get(m.id) ?? 0)) <= EPS) continue;
+    if (!proximo || m.vencimiento < proximo) proximo = m.vencimiento;
+  }
+  return proximo;
+}
+
 export interface LineaOrigen {
   descripcion: string;
   cantidad: string;

@@ -12,8 +12,74 @@ import {
   lineasDelComprobante,
   mesesCerrados,
   netoDeTotal,
+  proximoVencimientoSinImputar,
   resolverAjuste,
 } from './calculos';
+
+describe('proximoVencimientoSinImputar', () => {
+  const cargo = (id: string, importe: number, vencimiento: string | null) => ({
+    id,
+    tipo: 'cargo' as const,
+    parentId: null,
+    importe,
+    vencimiento,
+  });
+
+  it('devuelve el vencimiento más antiguo con algo pendiente', () => {
+    expect(
+      proximoVencimientoSinImputar(
+        [cargo('a', 100, '2026-12-05'), cargo('b', 100, '2026-10-05')],
+        [],
+      ),
+    ).toBe('2026-10-05');
+  });
+  it('saltea lo cancelado, pero no lo imputado en parte', () => {
+    const movimientos = [
+      cargo('a', 100, '2026-10-05'),
+      cargo('b', 100, '2026-11-05'),
+    ];
+    expect(
+      proximoVencimientoSinImputar(movimientos, [
+        { cargoId: 'a', importeCargo: 100 },
+        { cargoId: 'b', importeCargo: 40 },
+      ]),
+    ).toBe('2026-11-05');
+  });
+  it('descuenta los créditos del cargo', () => {
+    expect(
+      proximoVencimientoSinImputar(
+        [
+          cargo('a', 100, '2026-10-05'),
+          {
+            id: 'c',
+            tipo: 'credito',
+            parentId: 'a',
+            importe: 100,
+            vencimiento: null,
+          },
+        ],
+        [],
+      ),
+    ).toBeNull();
+  });
+  it('ignora los cargos sin vencimiento y los pagos', () => {
+    expect(
+      proximoVencimientoSinImputar(
+        [
+          cargo('a', 100, null),
+          {
+            id: 'p',
+            tipo: 'pago',
+            parentId: null,
+            importe: 100,
+            vencimiento: '2026-10-05',
+          },
+        ],
+        [],
+      ),
+    ).toBeNull();
+  });
+});
 
 describe('convertir', () => {
   it('no toca el importe si es la misma moneda, aunque no haya TC', () => {

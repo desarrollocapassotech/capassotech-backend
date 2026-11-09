@@ -57,6 +57,7 @@ import {
   mesesCerrados,
   netoDeTotal,
   numeroDeComprobante,
+  proximoVencimientoSinImputar,
   redondear,
   type ComprobanteFacturador,
   resolverAjuste,
@@ -361,6 +362,24 @@ export class CuentaCorrienteService {
         .filter(([, saldo]) => Math.abs(saldo) > EPS)
         .map(([moneda, saldo]) => ({ moneda, saldo }));
     };
+    const vencimientoDe = (cuentaId: string) =>
+      proximoVencimientoSinImputar(
+        movimientos
+          .filter((m) => cuentaDe(m) === cuentaId)
+          .map((m) => ({
+            id: m.id,
+            tipo: m.tipo,
+            parentId: m.parentId,
+            importe: Number(m.amount),
+            vencimiento: m.dueDate,
+          })),
+        imputaciones
+          .filter((i) => cuentaDe(porId.get(i.cargoId)!) === cuentaId)
+          .map((i) => ({
+            cargoId: i.cargoId,
+            importeCargo: Number(i.amount),
+          })),
+      );
 
     const conMovimientos = new Set(movimientos.map(cuentaDe));
     const cuentas: Array<{
@@ -401,7 +420,11 @@ export class CuentaCorrienteService {
       mesInicio,
       advertencias,
       tcHoy: { valor: tcHoy.rate, fijado: tcHoy.locked },
-      cuentas: cuentas.map((c) => ({ ...c, saldos: saldosDe(c.id) })),
+      cuentas: cuentas.map((c) => ({
+        ...c,
+        saldos: saldosDe(c.id),
+        proximoVencimiento: vencimientoDe(c.id),
+      })),
     };
   }
 
