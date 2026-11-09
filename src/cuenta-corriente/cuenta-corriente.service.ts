@@ -1212,6 +1212,64 @@ export class CuentaCorrienteService {
     };
   }
 
+  /**
+   * Para el aviso diario de vencimientos: los cargos de los dos lados que vencen `fecha` y siguen
+   * con algo pendiente (descontados créditos e imputaciones vigentes). Antes genera los cargos del
+   * mes y las cuotas, que si no solo aparecen al abrir las cuentas.
+   */
+  async cargosQueVencen(fecha: string) {
+    const { mesInicio } = await this.obtenerConfig();
+    for (const side of ['cliente', 'colaborador'] as const) {
+      if (mesInicio) await this.generarCargosDelLado(side, mesInicio);
+      await this.generarCuotas({ side });
+    }
+    const cargos = await this.movimientos.findBy({
+      tipo: 'cargo',
+      dueDate: fecha,
+    });
+    if (!cargos.length) return [];
+    const ids = cargos.map((c) => c.id);
+    const [imputaciones, creditos, clientes, colaboradores] = await Promise.all(
+      [
+        this.imputaciones.findBy({ cargoId: In(ids), reversedAt: IsNull() }),
+        this.movimientos.findBy({ parentId: In(ids), tipo: 'credito' }),
+        this.clientes.find(),
+        this.colaboradores.find(),
+      ],
+    );
+    const nombres = new Map<string, string>([
+      ...clientes.map((c) => [c.id, c.name] as [string, string]),
+      ...colaboradores.map((c) => [c.id, c.name] as [string, string]),
+    ]);
+    return cargos
+      .map((m) => {
+        const cancelado =
+          imputaciones
+            .filter((i) => i.cargoId === m.id)
+            .reduce((t, i) => t + Number(i.amount), 0) +
+          creditos
+            .filter((c) => c.parentId === m.id)
+            .reduce((t, c) => t + Number(c.amount), 0);
+        const cuentaId = (m.clientId ?? m.collaboratorId) as string;
+        return {
+          id: m.id,
+          side: m.side,
+          cuentaId,
+          cuenta: nombres.get(cuentaId) ?? 'Cuenta sin nombre',
+          concepto: m.concept,
+          importe: Number(m.amount),
+          pendiente: Math.max(0, redondear(Number(m.amount) - cancelado)),
+          moneda: m.currency,
+          vencimiento: fecha,
+        };
+      })
+      .filter((c) => c.pendiente > EPS)
+      .sort(
+        (a, b) =>
+          a.side.localeCompare(b.side) || a.cuenta.localeCompare(b.cuenta),
+      );
+  }
+
   /** Cargo manual o pago. Un pago con `imputarACargoIds` se imputa del cargo más viejo al más nuevo. */
   async crearMovimiento(dto: DatosMovimiento, clave: string, email?: string) {
     const previo = await this.movimientos.findOneBy({ idempotencyKey: clave });

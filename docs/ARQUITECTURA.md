@@ -176,6 +176,7 @@ Ver [`.env.example`](../.env.example). Resumen:
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Ruta al JSON de la service account del Admin SDK (no se commitea). |
 | `GOOGLE_SHEETS_TIME_ENTRIES_WEBHOOK_URL` | Webhook de Apps Script para el reporting de horas. Si falta, `TimeEntriesService` simplemente no lo dispara (no rompe la carga de horas). |
 | `BIRTHDAY_REMINDERS_ENABLED` | `true`/`false`: si se mandan los avisos de cumpleaños (3, 2, 1 días antes y el mismo día, a admin y contable). Si no está, solo se mandan en el deploy de `main` en Render (`RENDER_GIT_BRANCH`), para que QA, que tiene una copia de los colaboradores, no los duplique. |
+| `CC_DUE_REMINDERS_ENABLED` | `true`/`false`: si se manda el aviso diario de vencimientos de la Cuenta corriente (a las 9, a admin y contable, con los cargos que vencen ese día y siguen pendientes). Si no está, igual que el de cumpleaños: solo en el deploy de `main` en Render. |
 | `BACKEND_PUBLIC_URL` | URL pública del backend para el link de confirmación de los recibos. En Render no hace falta: se usa `RENDER_EXTERNAL_URL`, salvo que quieras otro dominio. Sin ninguna de las dos, el envío del recibo falla con un error. |
 
 ## Entornos y deploy

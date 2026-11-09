@@ -201,6 +201,20 @@ export class CcMovementEntity {
   updatedAt: Date;
 }
 
+// tracker.cc_due_reminders: un registro por aviso de vencimiento ya mandado (cargo, fecha de
+// vencimiento). Evita repetir el email si el cron corre dos veces el mismo día.
+@Entity({ name: 'cc_due_reminders', schema: 'tracker' })
+export class CcDueReminderEntity {
+  @PrimaryColumn({ name: 'movement_id', type: 'uuid' })
+  movementId: string;
+
+  @PrimaryColumn({ name: 'due_date', type: 'date' })
+  dueDate: string;
+
+  @CreateDateColumn({ name: 'notified_at', type: 'timestamptz' })
+  notifiedAt: Date;
+}
+
 // tracker.cc_imputations: qué parte de un pago cancela qué cargo, con el comprobante que se
 // emitió al imputar. Deshacer no borra la fila: queda `reversed_at` como rastro fiscal.
 @Entity({ name: 'cc_imputations', schema: 'tracker' })

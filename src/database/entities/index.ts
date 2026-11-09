@@ -9,6 +9,7 @@ import { CollaboratorProjectRateEntity } from './collaborator-project-rate.entit
 import { CollaboratorReceiptAcknowledgementEntity } from './collaborator-receipt-acknowledgement.entity';
 import {
   CcConfigEntity,
+  CcDueReminderEntity,
   CcImputationEntity,
   CcInstallmentPlanEntity,
   CcMovementEntity,
@@ -67,6 +68,7 @@ export const entities = [
   CcMovementEntity,
   CcImputationEntity,
   CcInstallmentPlanEntity,
+  CcDueReminderEntity,
   TimeEntryEntity,
   ExpenseEntity,
   ExpenseProjectEntity,
