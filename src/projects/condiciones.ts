@@ -107,8 +107,7 @@ export function errorDeCondicion(
     return 'El mes de fin no puede ser anterior al de inicio.';
   if (c.currency !== 'USD' && c.currency !== 'ARS')
     return 'La moneda debe ser USD o ARS.';
-  if (c.monthlyAmount == null && c.hourlyRate == null)
-    return 'Cargá una suscripción mensual, una tarifa por hora o las dos.';
+  // Sin montos es válida: cliente del producto que solo paga cargos sueltos (no genera cargos del mes).
   const fin = c.hasta ?? '9999-12';
   const pisada = otras.find(
     (o) => o.desde <= fin && (o.hasta ?? '9999-12') >= c.desde,
