@@ -14,6 +14,8 @@ export interface CondicionCobro {
   currency: 'USD' | 'ARS';
   monthlyAmount: number | null;
   hourlyRate: number | null;
+  /** Solo en la vista sin montos (colaboradores): si la condición cobra horas. */
+  cobraHoras?: boolean;
 }
 
 const positivo = (v: string | number | null | undefined): number | null => {
