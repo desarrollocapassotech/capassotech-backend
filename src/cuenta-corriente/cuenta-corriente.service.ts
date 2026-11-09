@@ -1416,7 +1416,10 @@ export class CuentaCorrienteService {
     return creada ? this.presentarImputacion(creada) : null;
   }
 
-  /** Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. */
+  /**
+   * Solo lo cargado a mano y sin comprobantes: lo fiscal se deshace, no se borra. Sus imputaciones
+   * sin comprobante se borran con él, y lo que cubrían vuelve a quedar pendiente.
+   */
   async eliminarMovimiento(id: string) {
     const m = await this.movimientos.findOneBy({ id });
     if (!m) throw new NotFoundException('Movimiento no encontrado.');
@@ -1432,14 +1435,12 @@ export class CuentaCorrienteService {
     const propias = await this.imputaciones.find({
       where: [{ pagoId: id }, { cargoId: id }],
     });
-    if (propias.some((i) => !i.reversedAt)) {
-      throw new ConflictException('Primero deshacé sus imputaciones.');
-    }
     if (propias.some((i) => i.comprobanteId || i.documento)) {
       throw new ConflictException(
         'Tiene comprobantes emitidos: queda en la cuenta como registro.',
       );
     }
+    // Sin comprobantes, sus imputaciones (vigentes o deshechas) se van con él: no dejan rastro fiscal.
     if (propias.length) {
       await this.imputaciones.delete({ id: In(propias.map((i) => i.id)) });
     }
