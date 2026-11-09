@@ -7,7 +7,7 @@ import {
 } from 'typeorm';
 import { BillableBaseFactorStrategy, BillingCurrency } from './enums';
 
-// Espejo de utils.ts -> BillableHoursCalculationConfig (se guarda tal cual en billable_config, JSONB)
+// Espejo de utils.ts -> BillableHoursCalculationConfig (se guarda tal cual en projects.billable_config, JSONB)
 export interface BillableHoursCalculationConfig {
   baseFactorStrategy: BillableBaseFactorStrategy;
   customBaseFactor: number | null;
@@ -84,29 +84,8 @@ export class ClientEntity {
   })
   billingCurrency: BillingCurrency;
 
-  @Column({
-    name: 'billable_config',
-    type: 'jsonb',
-    default: DEFAULT_BILLABLE_CONFIG,
-  })
-  billableConfig: BillableHoursCalculationConfig;
-
   @Column({ name: 'profile_image_url', type: 'text', nullable: true })
   profileImageUrl: string | null;
-
-  @Column({
-    name: 'billable_hours_limit',
-    type: 'numeric',
-    precision: 12,
-    scale: 2,
-    nullable: true,
-  })
-  billableHoursLimit: string | null;
-
-  // Key de una entrada del array JIRA_CONNECTIONS (env var): qué site/credenciales
-  // de Jira usar para autocompletar tareas de este cliente. Null = sin Jira configurado.
-  @Column({ name: 'jira_connection_key', type: 'text', nullable: true })
-  jiraConnectionKey: string | null;
 
   // Qué se le emite al facturar desde el tracker: 'factura' (ARCA) o 'recibo' (sin validez
   // fiscal, sin alta en el Facturador). Null = factura.

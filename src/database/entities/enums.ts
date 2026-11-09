@@ -16,11 +16,6 @@ export enum BillingCurrency {
   ARS = 'ARS',
 }
 
-export enum ProjectBillingType {
-  HOURLY = 'hourly',
-  MONTHLY = 'monthly',
-}
-
 export enum TaskBillingType {
   FEATURE = 'feature',
   INTERNAL_BUG = 'internal_bug',
