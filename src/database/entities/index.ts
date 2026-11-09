@@ -1,4 +1,5 @@
 import { AppUserEntity } from './app-user.entity';
+import { BirthdayReminderEntity } from './birthday-reminder.entity';
 import { ClientFunctionalAnalystEntity } from './client-functional-analyst.entity';
 import { ClientHoursAlertEntity } from './client-hours-alert.entity';
 import { ClientReceiptEntity } from './client-receipt.entity';
@@ -26,6 +27,7 @@ import { TicketMessageEntity } from './ticket-message.entity';
 import { TicketStateEntity } from './ticket-state.entity';
 
 export * from './app-user.entity';
+export * from './birthday-reminder.entity';
 export * from './client-functional-analyst.entity';
 export * from './client-hours-alert.entity';
 export * from './client-receipt.entity';
@@ -50,6 +52,7 @@ export * from './ticket-state.entity';
 
 export const entities = [
   AppUserEntity,
+  BirthdayReminderEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
