@@ -3,6 +3,7 @@ import type { CcMoneda, CcSide } from '../database/entities';
 
 export interface CargoQueVence {
   side: CcSide;
+  cuentaId: string;
   cuenta: string;
   concepto: string;
   importe: number;
@@ -31,7 +32,27 @@ export function vencimientosSubject(cargos: CargoQueVence[]): string {
   return `Hoy ${cargos.length === 1 ? 'vence' : 'vencen'} ${partes.join(' y ')} de la cuenta corriente`;
 }
 
-function seccion(titulo: string, cargos: CargoQueVence[]): string {
+/** Pantalla Cuenta corriente; con `cuentaId`, abierta en esa cuenta (los mismos parámetros que usa la pantalla). */
+export function urlCuentaCorriente(urlBase: string, side?: CcSide, cuentaId?: string): string {
+  const params = new URLSearchParams();
+  if (side === 'colaborador') params.set('lado', 'colaborador');
+  if (cuentaId) params.set('cuenta', cuentaId);
+  const query = params.toString();
+  return `${urlBase.replace(/\/+$/, '')}/admin/cuenta-corriente${query ? `?${query}` : ''}`;
+}
+
+function boton(url: string, texto: string): string {
+  return `
+  <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:8px;">
+    <tr>
+      <td style="background-color:#111827; border-radius:8px;">
+        <a href="${escapeHtml(url)}" target="_blank" style="display:inline-block; padding:12px 24px; font-size:14px; font-weight:600; color:#ffffff; text-decoration:none;">${escapeHtml(texto)}</a>
+      </td>
+    </tr>
+  </table>`;
+}
+
+function seccion(titulo: string, cargos: CargoQueVence[], urlBase: string): string {
   if (!cargos.length) return '';
   const celda = 'padding:10px 8px; font-size:14px; color:#111827; border-bottom:1px solid #f3f4f6; vertical-align:top;';
   const cabecera = 'padding:8px; font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#6b7280; border-bottom:1px solid #e5e7eb;';
@@ -39,7 +60,7 @@ function seccion(titulo: string, cargos: CargoQueVence[]): string {
     .map(
       (c) => `
       <tr>
-        <td style="${celda} font-weight:500;">${escapeHtml(c.cuenta)}</td>
+        <td style="${celda} font-weight:500;"><a href="${escapeHtml(urlCuentaCorriente(urlBase, c.side, c.cuentaId))}" target="_blank" style="color:#111827; text-decoration:underline;">${escapeHtml(c.cuenta)}</a></td>
         <td style="${celda}">${escapeHtml(c.concepto)}</td>
         <td style="${celda} text-align:right; white-space:nowrap; font-weight:600;">${escapeHtml(dinero(c.pendiente, c.moneda))}${
           c.pendiente < c.importe
@@ -60,13 +81,16 @@ function seccion(titulo: string, cargos: CargoQueVence[]): string {
   </table>`;
 }
 
-export function buildVencimientosHtml(fecha: string, cargos: CargoQueVence[]): string {
+export function buildVencimientosHtml(fecha: string, cargos: CargoQueVence[], urlBase: string): string {
+  // Si todo es de colaboradores, el botón abre esa pestaña.
+  const soloColaboradores = cargos.every((c) => c.side === 'colaborador');
   return buildEmailShell({
     eyebrow: 'Cuenta corriente',
     title: vencimientosSubject(cargos),
-    intro: `Cargos que vencen hoy, ${fechaTexto(fecha)}, y siguen con saldo pendiente. Cada importe está en la moneda del cargo.`,
+    intro: `Cargos que vencen hoy, ${fechaTexto(fecha)}, y siguen con saldo pendiente. Cada importe está en la moneda del cargo. Tocá el nombre de una cuenta para abrirla.`,
     bodyHtml:
-      seccion('Cobros a clientes', cargos.filter((c) => c.side === 'cliente')) +
-      seccion('Pagos a colaboradores', cargos.filter((c) => c.side === 'colaborador')),
+      seccion('Cobros a clientes', cargos.filter((c) => c.side === 'cliente'), urlBase) +
+      seccion('Pagos a colaboradores', cargos.filter((c) => c.side === 'colaborador'), urlBase) +
+      boton(urlCuentaCorriente(urlBase, soloColaboradores ? 'colaborador' : undefined), 'Ver cuenta corriente'),
   });
 }

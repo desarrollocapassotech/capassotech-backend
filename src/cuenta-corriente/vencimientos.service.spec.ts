@@ -57,6 +57,15 @@ describe('VencimientosService', () => {
     expect(subject).toBe('Hoy vencen 1 cobro y 1 pago de la cuenta corriente');
     expect(html).toContain('Puerto Rico');
     expect(html).toContain('US$ 1.600,00');
+    expect(html).toContain('href="https://tracker.capasso.tech/admin/cuenta-corriente"');
+    expect(html).toContain('href="https://tracker.capasso.tech/admin/cuenta-corriente?cuenta=c1"');
+    expect(html).toContain('href="https://tracker.capasso.tech/admin/cuenta-corriente?lado=colaborador&amp;cuenta=c1"');
+  });
+
+  it('usa FRONTEND_PUBLIC_URL para los links', async () => {
+    const { service, resend } = setup([pago], { CC_DUE_REMINDERS_ENABLED: 'true', FRONTEND_PUBLIC_URL: 'https://qa.test/' });
+    await service.avisarVencimientos('2026-11-10');
+    expect(resend.send.mock.calls[0][0].html).toContain('href="https://qa.test/admin/cuenta-corriente?lado=colaborador"');
   });
 
   it('no repite el aviso si el cron corre dos veces el mismo día', async () => {

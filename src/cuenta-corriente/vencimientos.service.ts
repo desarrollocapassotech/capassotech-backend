@@ -79,7 +79,7 @@ export class VencimientosService {
         sent = await this.resend.send({
           to: destinatarios,
           subject: vencimientosSubject(reservados),
-          html: buildVencimientosHtml(fecha, reservados),
+          html: buildVencimientosHtml(fecha, reservados, this.urlFrontend()),
         });
       } catch (error) {
         this.logger.error(`No se pudo mandar el aviso de vencimientos: ${(error as Error).message}`);
@@ -97,6 +97,11 @@ export class VencimientosService {
     } finally {
       this.running = false;
     }
+  }
+
+  /** Dónde está el panel, para los links del email. */
+  private urlFrontend(): string {
+    return this.configService.get<string>('FRONTEND_PUBLIC_URL') || 'https://tracker.capasso.tech';
   }
 
   private isUniqueViolation(error: unknown): boolean {
