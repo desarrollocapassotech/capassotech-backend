@@ -613,7 +613,10 @@ export class CuentaCorrienteService {
       formaPago: m.paymentMethod,
       referencia: m.reference,
       lineas: m.detail?.lineas ?? [],
-      comprobantesPrevios: m.comprobantesPrevios ?? [],
+      // La ruta del archivo no sale: el adjunto se baja por su endpoint.
+      comprobantesPrevios: (m.comprobantesPrevios ?? []).map(
+        ({ adjuntoPath, ...p }) => ({ ...p, adjunto: Boolean(adjuntoPath) }),
+      ),
       pendiente,
       creadoEn: m.createdAt,
       imputaciones: propias.map((i) => this.presentarImputacion(i, porId)),
@@ -1169,7 +1172,13 @@ export class CuentaCorrienteService {
     email?: string,
   ) {
     const previo = await this.planes.findOneBy({ idempotencyKey: clave });
-    if (previo) return { id: previo.id, imputaciones: [] };
+    if (previo) {
+      return {
+        id: previo.id,
+        cargoIds: await this.cuotasDelPlan(previo.id),
+        imputaciones: [],
+      };
+    }
     await this.asegurarExiste(side, id);
     if (!Number.isInteger(cuotas) || cuotas < 2 || cuotas > 60) {
       throw new BadRequestException(
@@ -1201,7 +1210,11 @@ export class CuentaCorrienteService {
       }),
     );
     await this.generarCuotas({ side, ...this.dondeCuenta(side, id) });
-    return { id: plan.id, imputaciones: [] };
+    return {
+      id: plan.id,
+      cargoIds: await this.cuotasDelPlan(plan.id),
+      imputaciones: [],
+    };
   }
 
   /**
@@ -1424,7 +1437,20 @@ export class CuentaCorrienteService {
       );
       if (principal) resultados.push(principal);
     }
-    return { id: mov.id, imputaciones: resultados };
+    return {
+      id: mov.id,
+      // El cargo creado: para emitirle o adjuntarle el comprobante.
+      cargoIds: mov.tipo === 'cargo' ? [mov.id] : [],
+      imputaciones: resultados,
+    };
+  }
+
+  /** Cuotas de un plan, de la primera a la última. */
+  private async cuotasDelPlan(planId: string) {
+    const cuotas = await this.movimientos.findBy({ planId, tipo: 'cargo' });
+    return cuotas
+      .sort((a, b) => (a.cuotaNumero ?? 0) - (b.cuotaNumero ?? 0))
+      .map((c) => c.id);
   }
 
   /** Cada adicional queda en la cuenta como un cargo cubierto por este pago. Reintentar no los duplica. */
@@ -1625,6 +1651,11 @@ export class CuentaCorrienteService {
     if (!cargo) throw new NotFoundException('Movimiento no encontrado.');
     const previos: CcComprobantePrevio[] = [];
     for (const p of cargo.comprobantesPrevios ?? []) {
+      // Un adjunto no está en el Facturador: queda como está.
+      if (p.adjuntoPath) {
+        previos.push(p);
+        continue;
+      }
       const c = await this.comprobanteDelFacturador(p.comprobanteId, email);
       if (facturaSinAnular(c)) previos.push(comprobantePrevioDe(c));
     }
@@ -1669,6 +1700,12 @@ export class CuentaCorrienteService {
     if (datosCliente(entidad).documento !== 'factura') {
       throw new BadRequestException(
         'A este cliente no se le factura: el recibo sale al imputar el cobro.',
+      );
+    }
+    await this.facturacion.exigirAltaEnFacturador(datosCliente(entidad), email);
+    if (cargo.comprobantesPrevios?.some((p) => p.adjuntoPath)) {
+      throw new ConflictException(
+        'Este cargo ya tiene un comprobante adjunto: no se emite otro.',
       );
     }
     // Sin saber si ya se facturó no se emite: podría salir una factura repetida.
@@ -1794,6 +1831,86 @@ export class CuentaCorrienteService {
     const previo = comprobantePrevioDe(c);
     await this.agregarComprobantePrevio(cargoId, previo);
     return previo;
+  }
+
+  /**
+   * Adjunta a un cargo de cliente un comprobante emitido afuera, sin cobro de por medio. Queda en el
+   * cargo como su factura: el cargo queda fijo y el cobro que se impute después no emite otra.
+   * Mismo archivo otra vez (un reintento): no se duplica.
+   */
+  async adjuntarComprobanteACargo(cargoId: string, valor: unknown) {
+    const cargo = await this.movimientos.findOneBy({ id: cargoId });
+    if (!cargo) throw new NotFoundException('Cargo no encontrado.');
+    if (cargo.tipo !== 'cargo' || cargo.side !== 'cliente') {
+      throw new BadRequestException(
+        'El comprobante adjunto es para los cargos de clientes.',
+      );
+    }
+    const adjunto = await this.adjuntoDe(valor, cargo.clientId);
+    if (!adjunto) throw new BadRequestException('Adjuntá el comprobante.');
+    const previos = cargo.comprobantesPrevios ?? [];
+    const yaEsta = previos.find((p) => p.adjuntoPath === adjunto.path);
+    if (yaEsta) return yaEsta;
+    if (previos.length) {
+      throw new ConflictException('Este cargo ya tiene su comprobante.');
+    }
+    if (
+      await this.imputaciones.existsBy({ cargoId, reversedAt: IsNull() })
+    ) {
+      throw new ConflictException(
+        'Este cargo ya tiene cobros imputados: el comprobante se adjunta al imputar.',
+      );
+    }
+    // Cubre lo que hoy tiene el cargo, en su moneda.
+    const previo: CcComprobantePrevio = {
+      comprobanteId: `adjunto-${randomUUID()}`,
+      tipo: adjunto.tipo,
+      numero: adjunto.numero,
+      total: Number(cargo.amount),
+      moneda: cargo.currency,
+      ambiente: null,
+      adjuntoPath: adjunto.path,
+      adjuntoNombre: adjunto.nombre,
+    };
+    await this.agregarComprobantePrevio(cargoId, previo);
+    return previo;
+  }
+
+  private async adjuntoDelCargo(cargoId: string, comprobanteId: string) {
+    const cargo = await this.movimientos.findOneBy({ id: cargoId });
+    const previo = cargo?.comprobantesPrevios?.find(
+      (p) => p.comprobanteId === comprobanteId && p.adjuntoPath,
+    );
+    if (!cargo || !previo) {
+      throw new NotFoundException('Ese cargo no tiene ese comprobante adjunto.');
+    }
+    return { cargo, previo };
+  }
+
+  async archivoAdjuntoDeCargo(cargoId: string, comprobanteId: string) {
+    const { previo } = await this.adjuntoDelCargo(cargoId, comprobanteId);
+    const [buffer] = await getStorage(this.firebaseApp)
+      .bucket()
+      .file(previo.adjuntoPath!)
+      .download();
+    return {
+      buffer,
+      tipo:
+        TIPO_POR_EXTENSION[previo.adjuntoPath!.split('.').pop() ?? ''] ??
+        'application/octet-stream',
+    };
+  }
+
+  /** Quita un adjunto cargado por error. No anula nada: fue emitido afuera. El cargo vuelve a poder emitir. */
+  async quitarAdjuntoDeCargo(cargoId: string, comprobanteId: string) {
+    const { cargo } = await this.adjuntoDelCargo(cargoId, comprobanteId);
+    const resto = (cargo.comprobantesPrevios ?? []).filter(
+      (p) => p.comprobanteId !== comprobanteId,
+    );
+    await this.movimientos.update(
+      { id: cargoId },
+      { comprobantesPrevios: resto.length ? resto : null },
+    );
   }
 
   /** Suma la factura al cargo; si ya estaba (un reintento con la misma clave), la actualiza. */
@@ -1993,6 +2110,7 @@ export class CuentaCorrienteService {
           : await this.documentoDe(
               cargo,
               emitirPedido && !adjunto && pago.origen !== 'saldo_inicial',
+              email,
             );
         const requiereTc =
           pago.currency !== cargo.currency ||
@@ -2046,7 +2164,11 @@ export class CuentaCorrienteService {
   }
 
   /** Qué comprobante corresponde al imputar este cargo (null: ninguno). */
-  private async documentoDe(cargo: CcMovementEntity, emitir: boolean) {
+  private async documentoDe(
+    cargo: CcMovementEntity,
+    emitir: boolean,
+    email?: string,
+  ) {
     if (!emitir) return null;
     if (cargo.side === 'colaborador') return 'recibo' as const;
     // Ya tiene su factura: el cobro se imputa sin emitir otra, y deshacerlo no la anula.
@@ -2054,7 +2176,8 @@ export class CuentaCorrienteService {
     const entidad = await this.clientes.findOneByOrFail({
       id: cargo.clientId!,
     });
-    const documento = datosCliente(entidad).documento;
+    const datos = datosCliente(entidad);
+    const documento = datos.documento;
     // Sin saber si ya se facturó no se emite: podría salir una factura repetida.
     if (
       documento === 'factura' &&
@@ -2064,6 +2187,9 @@ export class CuentaCorrienteService {
       throw new ServiceUnavailableException(
         'No se pudo consultar el Facturador para ver si este mes ya tiene factura. Probá de nuevo en un momento.',
       );
+    }
+    if (documento === 'factura') {
+      await this.facturacion.exigirAltaEnFacturador(datos, email);
     }
     return documento;
   }

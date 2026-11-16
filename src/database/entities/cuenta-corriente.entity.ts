@@ -29,9 +29,16 @@ export interface CcDetalle {
   lineas: CcLineaDetalle[];
 }
 
-/** Factura emitida por fuera de la cuenta corriente que cubre un cargo del mes. */
+/**
+ * Factura que cubre un cargo sin pasar por una imputación: hecha por fuera, emitida antes de cobrar
+ * o un comprobante adjunto (emitido afuera, con su archivo; no está en el Facturador).
+ */
 export interface CcComprobantePrevio {
+  /** Del Facturador; en un adjunto, `adjunto-{uuid}`. */
   comprobanteId: string;
+  /** Archivo del comprobante adjunto (sin URL pública: se baja por el backend). */
+  adjuntoPath?: string;
+  adjuntoNombre?: string | null;
   tipo: string | null;
   /** "00001-00000012". */
   numero: string | null;

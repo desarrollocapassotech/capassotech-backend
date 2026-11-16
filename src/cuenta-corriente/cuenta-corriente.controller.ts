@@ -156,6 +156,37 @@ export class CuentaCorrienteController {
     );
   }
 
+  /** Adjunta a un cargo un comprobante emitido afuera (ya subido), sin cobro de por medio. */
+  @Post('movimientos/:id/comprobante-adjunto')
+  @HttpCode(200)
+  adjuntarComprobanteACargo(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { adjunto?: unknown },
+  ) {
+    return this.cc.adjuntarComprobanteACargo(id, body?.adjunto);
+  }
+
+  @Get('movimientos/:id/comprobante-adjunto/:comprobanteId')
+  async adjuntoDeCargo(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('comprobanteId') comprobanteId: string,
+    @Res() res: Response,
+  ) {
+    const r = await this.cc.archivoAdjuntoDeCargo(id, comprobanteId);
+    res.setHeader('Content-Type', r.tipo);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(r.buffer);
+  }
+
+  @Delete('movimientos/:id/comprobante-adjunto/:comprobanteId')
+  @HttpCode(204)
+  async quitarAdjuntoDeCargo(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('comprobanteId') comprobanteId: string,
+  ) {
+    await this.cc.quitarAdjuntoDeCargo(id, comprobanteId);
+  }
+
   /** Guarda el comprobante emitido afuera y devuelve el número que se pudo leer. */
   @Post('comprobantes-adjuntos')
   @UseInterceptors(
