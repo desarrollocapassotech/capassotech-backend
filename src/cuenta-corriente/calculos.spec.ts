@@ -7,6 +7,7 @@ import {
   convertir,
   cuotasAGenerar,
   facturasDeItems,
+  facturaSinAnular,
   facturaVigente,
   fechaDeCuota,
   lineasDelComprobante,
@@ -270,6 +271,14 @@ describe('facturas hechas por fuera', () => {
       true,
     );
   });
+  it('una rechazada sigue cubriendo el cargo hasta que se anula', () => {
+    expect(facturaSinAnular(c)).toBe(true);
+    expect(facturaSinAnular({ ...c, estado: 'RECHAZADO' })).toBe(true);
+    expect(facturaSinAnular({ ...c, estado: 'ANULADO' })).toBe(false);
+    expect(facturaSinAnular({ ...c, notas: [{ estado: 'EMITIDO' }] })).toBe(
+      false,
+    );
+  });
   it('guarda lo que hace falta para mostrarla', () => {
     expect(comprobantePrevioDe(c)).toEqual({
       comprobanteId: 'f1',
@@ -311,19 +320,21 @@ describe('cuotas', () => {
     expect(fechaDeCuota('2026-01-31', 3)).toBe('2026-03-31');
   });
   const plan = { totalCuotas: 3, firstDate: '2026-10-05' };
-  it('la 3/3 de EPEFI aparece recién el 05/12', () => {
-    expect(cuotasAGenerar(plan, [1, 2], '2026-12-04')).toEqual([]);
-    expect(cuotasAGenerar(plan, [1, 2], '2026-12-05')).toEqual([
+  it('genera todas desde el principio, también las de meses que vienen', () => {
+    expect(cuotasAGenerar(plan, [])).toEqual([
+      { numero: 1, fecha: '2026-10-05' },
+      { numero: 2, fecha: '2026-11-05' },
+      { numero: 3, fecha: '2026-12-05' },
+    ]);
+  });
+  it('completa las que faltan de un plan creado antes', () => {
+    expect(cuotasAGenerar(plan, [1])).toEqual([
+      { numero: 2, fecha: '2026-11-05' },
       { numero: 3, fecha: '2026-12-05' },
     ]);
   });
   it('no repite las que ya existen ni se pasa del total', () => {
-    expect(cuotasAGenerar(plan, [1, 2, 3], '2030-01-01')).toEqual([]);
-  });
-  it('genera las atrasadas si nadie abrió la cuenta', () => {
-    expect(cuotasAGenerar(plan, [], '2026-11-20').map((c) => c.numero)).toEqual(
-      [1, 2],
-    );
+    expect(cuotasAGenerar(plan, [1, 2, 3])).toEqual([]);
   });
   it('arma el concepto', () => {
     expect(conceptoDeCuota(3, 3, 'módulo de exámenes')).toBe(

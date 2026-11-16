@@ -243,6 +243,15 @@ export const facturaVigente = (c: ComprobanteFacturador) =>
   c.estado === 'EMITIDO' &&
   !(c.notas ?? []).some((n) => n.estado === 'EMITIDO');
 
+/**
+ * Sigue cubriendo el cargo mientras no se anule: una rechazada por ARCA se corrige y se reemite
+ * desde su detalle, y el cargo no tiene que emitir otra mientras tanto.
+ */
+export const facturaSinAnular = (c: ComprobanteFacturador) =>
+  c.estado !== 'ANULADO' &&
+  c.estado !== 'BORRADOR' &&
+  !(c.notas ?? []).some((n) => n.estado === 'EMITIDO');
+
 export function comprobantePrevioDe(
   c: ComprobanteFacturador,
 ): CcComprobantePrevio {
@@ -296,17 +305,18 @@ export const conceptoDeCuota = (
   concepto: string,
 ) => `Cuota ${numero}/${total} ${concepto}`;
 
-/** Cuotas de un plan que ya llegaron a su fecha y todavía no existen. */
+/**
+ * Cuotas de un plan que todavía no existen: todas, también las de meses que vienen, para que la
+ * cuenta muestre el plan completo desde el principio. Cada una con su fecha, que es su vencimiento.
+ */
 export function cuotasAGenerar(
   plan: { totalCuotas: number; firstDate: string },
   existentes: number[],
-  hoy: string,
 ): Array<{ numero: number; fecha: string }> {
   const resultado: Array<{ numero: number; fecha: string }> = [];
   for (let numero = 1; numero <= plan.totalCuotas; numero += 1) {
-    const fecha = fechaDeCuota(plan.firstDate, numero);
-    if (fecha <= hoy && !existentes.includes(numero)) {
-      resultado.push({ numero, fecha });
+    if (!existentes.includes(numero)) {
+      resultado.push({ numero, fecha: fechaDeCuota(plan.firstDate, numero) });
     }
   }
   return resultado;
