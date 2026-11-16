@@ -227,6 +227,19 @@ export class FacturacionService {
     );
   }
 
+  /**
+   * Solo se le emite factura a un cliente que ya existe en el Facturador (asociado o con su CUIT).
+   * Al resto se lo da de alta primero desde "Datos para facturar": acá no se crea solo.
+   */
+  async exigirAltaEnFacturador(c: DatosCliente, email?: string) {
+    const estado = (await this.estadoClientes([c], email)).get(c.id)!;
+    if (estado.alta !== 'vinculado' && estado.alta !== 'existente') {
+      throw new UnprocessableEntityException(
+        `${c.razonSocial} no está dado de alta en el Facturador: dalo de alta desde "Datos para facturar" antes de emitir.`,
+      );
+    }
+  }
+
   async itemsPorReferencia(refs: string[], email?: string) {
     const items = new Map<string, ItemFacturador>();
     for (const lote of lotes(refs)) {
