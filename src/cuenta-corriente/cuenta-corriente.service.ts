@@ -53,6 +53,7 @@ import {
   cuotasAGenerar,
   EPS,
   facturasDeItems,
+  facturaSinAnular,
   facturaVigente,
   lineasDelComprobante,
   mesesCerrados,
@@ -1115,8 +1116,8 @@ export class CuentaCorrienteService {
   }
 
   /**
-   * Crea las cuotas de los planes que ya llegaron a su fecha (idempotente: se llama al abrir las
-   * cuentas). Así la siguiente cuota aparece sola, sin que nadie tenga que cargarla.
+   * Crea las cuotas que falten de los planes vigentes, todas de una vez, también las de meses que
+   * vienen (idempotente: se llama al abrir las cuentas, así se completan los planes creados antes).
    */
   private async generarCuotas(donde: {
     side: CcSide;
@@ -1128,12 +1129,11 @@ export class CuentaCorrienteService {
     const existentes = await this.movimientos.findBy({
       planId: In(planes.map((p) => p.id)),
     });
-    const hoy = hoyArgentina();
     for (const plan of planes) {
       const numeros = existentes
         .filter((m) => m.planId === plan.id && m.cuotaNumero != null)
         .map((m) => m.cuotaNumero as number);
-      for (const { numero, fecha } of cuotasAGenerar(plan, numeros, hoy)) {
+      for (const { numero, fecha } of cuotasAGenerar(plan, numeros)) {
         await this.movimientos
           .createQueryBuilder()
           .insert()
@@ -1523,7 +1523,10 @@ export class CuentaCorrienteService {
     const propias = await this.imputaciones.find({
       where: [{ pagoId: id }, { cargoId: id }],
     });
-    if (propias.some((i) => i.comprobanteId || i.documento)) {
+    if (
+      propias.some((i) => i.comprobanteId || i.documento) ||
+      (m.comprobantesPrevios?.length ?? 0) > 0
+    ) {
       throw new ConflictException(
         'Tiene comprobantes emitidos: queda en la cuenta como registro.',
       );
@@ -1532,9 +1535,31 @@ export class CuentaCorrienteService {
     if (propias.length) {
       await this.imputaciones.delete({ id: In(propias.map((i) => i.id)) });
     }
-    // Sin esto, la cuota borrada volvería a generarse sola: se frenan esta y las que faltan.
+    // Sin esto, la cuota borrada volvería a generarse sola: se frena el plan y se van también las
+    // cuotas siguientes que todavía no tienen cobros ni factura (las otras quedan como registro).
     if (m.planId) {
       await this.planes.update({ id: m.planId }, { canceledAt: new Date() });
+      const siguientes = (
+        await this.movimientos.findBy({ planId: m.planId, tipo: 'cargo' })
+      ).filter(
+        (c) =>
+          c.id !== id &&
+          (c.cuotaNumero ?? 0) > (m.cuotaNumero ?? 0) &&
+          !(c.comprobantesPrevios?.length ?? 0),
+      );
+      if (siguientes.length) {
+        const conImputaciones = new Set(
+          (
+            await this.imputaciones.findBy({
+              cargoId: In(siguientes.map((c) => c.id)),
+            })
+          ).map((i) => i.cargoId),
+        );
+        const libres = siguientes.filter((c) => !conImputaciones.has(c.id));
+        if (libres.length) {
+          await this.movimientos.delete({ id: In(libres.map((c) => c.id)) });
+        }
+      }
     }
     await this.movimientos.delete({ id });
   }
@@ -1601,13 +1626,192 @@ export class CuentaCorrienteService {
     const previos: CcComprobantePrevio[] = [];
     for (const p of cargo.comprobantesPrevios ?? []) {
       const c = await this.comprobanteDelFacturador(p.comprobanteId, email);
-      if (facturaVigente(c)) previos.push(comprobantePrevioDe(c));
+      if (facturaSinAnular(c)) previos.push(comprobantePrevioDe(c));
     }
     await this.movimientos.update(
       { id: cargoId },
       { comprobantesPrevios: previos.length ? previos : null },
     );
     return previos;
+  }
+
+  // ── Facturar un cargo sin cobro ──────────────────────────────────────────
+
+  /**
+   * Factura un cargo de cliente antes de cobrarlo, por todo lo que falta facturar o por menos.
+   * La factura queda en el cargo como las hechas por fuera: el cargo queda fijo y el cobro que se
+   * impute después no emite otra. Se anula desde su detalle, y entonces el cargo vuelve a emitir.
+   */
+  async emitirFacturaDeCargo(
+    cargoId: string,
+    dto: { importe?: unknown; fechaEmision?: unknown },
+    clave: string,
+    email?: string,
+  ) {
+    const inicial = await this.movimientos.findOneBy({ id: cargoId });
+    if (!inicial) throw new NotFoundException('Cargo no encontrado.');
+    if (inicial.tipo !== 'cargo' || inicial.side !== 'cliente') {
+      throw new BadRequestException('Solo se factura un cargo de cliente.');
+    }
+    // El TC del mes pudo haberse fijado recién: el cargo tiene que estar al día antes de facturar.
+    if (inicial.origen === 'mes') {
+      const { mesInicio } = await this.obtenerConfig();
+      if (mesInicio) {
+        await this.generarCargos('cliente', inicial.clientId!, mesInicio);
+      }
+    }
+    const cargo = await this.movimientos.findOneByOrFail({ id: cargoId });
+    if (cargo.origen === 'mes') await this.revisarComprobantes([cargo], email);
+
+    const entidad = await this.clientes.findOneByOrFail({
+      id: cargo.clientId!,
+    });
+    if (datosCliente(entidad).documento !== 'factura') {
+      throw new BadRequestException(
+        'A este cliente no se le factura: el recibo sale al imputar el cobro.',
+      );
+    }
+    // Sin saber si ya se facturó no se emite: podría salir una factura repetida.
+    if (cargo.origen === 'mes' && !cargo.comprobanteRevisadoAt) {
+      throw new ServiceUnavailableException(
+        'No se pudo consultar el Facturador para ver si este mes ya tiene factura. Probá de nuevo en un momento.',
+      );
+    }
+    const imputado = await this.imputaciones.findBy({
+      cargoId,
+      reversedAt: IsNull(),
+    });
+    if (imputado.length) {
+      throw new ConflictException(
+        'Este cargo ya tiene cobros imputados: lo que falta se factura al imputar el próximo.',
+      );
+    }
+
+    const creditos = await this.movimientos.findBy({
+      parentId: cargoId,
+      tipo: 'credito',
+    });
+    const pendiente = redondear(
+      Number(cargo.amount) - creditos.reduce((t, c) => t + Number(c.amount), 0),
+    );
+    // La factura va en pesos: un cargo en dólares se pasa al TC de su mes (el que se fija al facturar).
+    const tc =
+      cargo.currency === 'USD'
+        ? await this.tcUtil(cargo.month ?? cargo.date.slice(0, 7))
+        : null;
+    const pendienteArs = convertir(pendiente, cargo.currency, 'ARS', tc);
+    const previos = cargo.comprobantesPrevios ?? [];
+    const facturadoArs = redondear(
+      previos.reduce(
+        (t, p) =>
+          t +
+          (p.total == null
+            ? 0
+            : p.moneda === 'USD'
+              ? convertir(p.total, 'USD', 'ARS', tc ?? undefined)
+              : p.total),
+        0,
+      ),
+    );
+    const restante = redondear(pendienteArs - facturadoArs);
+    if (restante <= EPS) {
+      throw new ConflictException('Este cargo ya está facturado por completo.');
+    }
+    const importe =
+      dto.importe === undefined || dto.importe === null || dto.importe === ''
+        ? restante
+        : importeValido(dto.importe);
+    if (importe > restante + EPS) {
+      throw new BadRequestException(
+        `No se puede facturar más de lo que falta: $ ${restante.toFixed(2)}.`,
+      );
+    }
+    const fechaEmision = dto.fechaEmision
+      ? fechaValida(dto.fechaEmision, 'La fecha de emisión')
+      : hoyArgentina();
+
+    const entero =
+      previos.length === 0 &&
+      creditos.length === 0 &&
+      Math.abs(importe - pendienteArs) <= EPS;
+    const { puntoVentaId, conIva } = await this.facturacion.datosEmision(email);
+    const lineas = lineasDelComprobante(
+      cargo.detail?.lineas ?? [],
+      importe,
+      entero,
+      entero ? cargo.concept : `${cargo.concept} (parcial)`,
+    );
+    const periodo = rangoMes(cargo.month ?? fechaEmision.slice(0, 7));
+
+    let comprobanteId: string;
+    try {
+      const creado = await this.facturacion.crearYEmitir(
+        {
+          clienteTrackerId: cargo.clientId,
+          puntoVentaId,
+          concepto: 'SERVICIOS',
+          moneda: 'ARS',
+          fechaEmision,
+          fechaServicioDesde: periodo.desde,
+          fechaServicioHasta: periodo.hasta,
+          fechaVtoPago: sumarDias(fechaEmision, DIAS_VENCIMIENTO),
+          lineas: lineas.map((l) => ({
+            descripcion: l.descripcion,
+            cantidad: '1',
+            unidad: 'SERVICIO',
+            precioUnitario: netoDeTotal(l.importe, conIva).toFixed(2),
+            alicuotaIva: '21',
+          })),
+        },
+        `cc-cargo-${clave}`,
+        email,
+      );
+      comprobanteId = creado.id;
+    } catch (err) {
+      // ARCA la rechazó: el comprobante existe y queda en el cargo, para corregirlo y reemitirlo
+      // desde su detalle sin que el cargo emita otra.
+      const respuesta =
+        err instanceof HttpException
+          ? (err.getResponse() as { comprobante?: { id?: unknown } } | string)
+          : null;
+      const rechazado =
+        respuesta && typeof respuesta === 'object'
+          ? respuesta.comprobante?.id
+          : undefined;
+      if (typeof rechazado === 'string') {
+        await this.agregarComprobantePrevio(cargoId, {
+          comprobanteId: rechazado,
+          tipo: null,
+          numero: null,
+          total: importe,
+          moneda: 'ARS',
+          ambiente: null,
+        });
+      }
+      throw err;
+    }
+    const c = await this.comprobanteDelFacturador(comprobanteId, email);
+    const previo = comprobantePrevioDe(c);
+    await this.agregarComprobantePrevio(cargoId, previo);
+    return previo;
+  }
+
+  /** Suma la factura al cargo; si ya estaba (un reintento con la misma clave), la actualiza. */
+  private async agregarComprobantePrevio(
+    cargoId: string,
+    previo: CcComprobantePrevio,
+  ) {
+    const cargo = await this.movimientos.findOneByOrFail({ id: cargoId });
+    const otros = (cargo.comprobantesPrevios ?? []).filter(
+      (p) => p.comprobanteId !== previo.comprobanteId,
+    );
+    await this.movimientos.update(
+      { id: cargoId },
+      {
+        comprobantesPrevios: [...otros, previo],
+        comprobanteRevisadoAt: cargo.comprobanteRevisadoAt ?? new Date(),
+      },
+    );
   }
 
   // ── Comprobante adjunto ──────────────────────────────────────────────────

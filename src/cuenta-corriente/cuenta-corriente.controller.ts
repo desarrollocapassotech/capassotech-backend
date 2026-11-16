@@ -139,6 +139,23 @@ export class CuentaCorrienteController {
     return this.cc.sincronizarComprobantesPrevios(id, u.email);
   }
 
+  /** Factura un cargo de cliente antes de cobrarlo (todo lo que falta facturar, o `importe`). */
+  @Post('movimientos/:id/factura')
+  @HttpCode(200)
+  emitirFacturaDeCargo(
+    @CurrentUser() u: Usuario,
+    @Headers('idempotency-key') clave: string | undefined,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { importe?: unknown; fechaEmision?: unknown },
+  ) {
+    return this.cc.emitirFacturaDeCargo(
+      id,
+      body ?? {},
+      claveIdempotencia(clave),
+      u.email,
+    );
+  }
+
   /** Guarda el comprobante emitido afuera y devuelve el número que se pudo leer. */
   @Post('comprobantes-adjuntos')
   @UseInterceptors(
