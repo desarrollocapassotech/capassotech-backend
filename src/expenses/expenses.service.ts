@@ -3,7 +3,16 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomUUID } from 'crypto';
 import { EntityManager, In, Repository } from 'typeorm';
 import { ResendService } from '../common/resend.service';
-import { CollaboratorEntity, ExpenseEntity, ExpensePeriodicity, ExpenseProjectEntity, ProjectEntity, UserRole } from '../database/entities';
+import {
+  ClientEntity,
+  CollaboratorEntity,
+  ExpenseClientEntity,
+  ExpenseEntity,
+  ExpensePeriodicity,
+  ExpenseProjectEntity,
+  ProjectEntity,
+  UserRole,
+} from '../database/entities';
 import { CreateExpenseDto, CreateExpenseInstallmentsDto, UpdateExpenseDto } from './expenses.dto';
 import { buildExpenseNotificationHtml } from './expense-notification.template';
 import { addMonthsToDateString, splitAmountIntoInstallments } from './installment.util';
@@ -19,6 +28,8 @@ function formatPeriodicity(periodicity: ExpensePeriodicity): string {
 // adjuntados acá para no filtrar el detalle de esa tabla puente al resto de la app.
 export interface ExpenseResponse extends ExpenseEntity {
   projectIds: string[];
+  /** Clientes que lo pagan (tracker.expense_clients); vacío, lo paga la empresa. */
+  clientIds: string[];
 }
 
 @Injectable()
@@ -30,6 +41,10 @@ export class ExpensesService {
     private readonly expenseRepository: Repository<ExpenseEntity>,
     @InjectRepository(ExpenseProjectEntity)
     private readonly expenseProjectRepository: Repository<ExpenseProjectEntity>,
+    @InjectRepository(ExpenseClientEntity)
+    private readonly expenseClientRepository: Repository<ExpenseClientEntity>,
+    @InjectRepository(ClientEntity)
+    private readonly clientRepository: Repository<ClientEntity>,
     @InjectRepository(CollaboratorEntity)
     private readonly collaboratorRepository: Repository<CollaboratorEntity>,
     @InjectRepository(ProjectEntity)
@@ -38,17 +53,25 @@ export class ExpensesService {
   ) {}
 
   async findAll(): Promise<ExpenseResponse[]> {
-    const [expenses, links] = await Promise.all([
+    const [expenses, links, clientLinks] = await Promise.all([
       this.expenseRepository.find({ order: { expenseDate: 'DESC', createdAt: 'DESC' } }),
       this.expenseProjectRepository.find(),
+      this.expenseClientRepository.find(),
     ]);
-    return this.attachProjectIds(expenses, links);
+    return this.attachLinks(expenses, links, clientLinks);
   }
 
   async findOne(id: string): Promise<ExpenseResponse> {
     const expense = await this.findEntity(id);
-    const links = await this.expenseProjectRepository.find({ where: { expenseId: id } });
-    return { ...expense, projectIds: links.map((link) => link.projectId) };
+    const [links, clientLinks] = await Promise.all([
+      this.expenseProjectRepository.find({ where: { expenseId: id } }),
+      this.expenseClientRepository.find({ where: { expenseId: id } }),
+    ]);
+    return {
+      ...expense,
+      projectIds: links.map((link) => link.projectId),
+      clientIds: clientLinks.map((link) => link.clientId),
+    };
   }
 
   async create(dto: CreateExpenseDto, actorEmail: string): Promise<ExpenseResponse> {
@@ -77,7 +100,8 @@ export class ExpensesService {
 
       const saved = await manager.getRepository(ExpenseEntity).save(expense);
       const projectIds = await this.replaceExpenseProjects(manager, saved.id, dto.projectIds ?? []);
-      return { ...saved, projectIds };
+      const clientIds = await this.replaceExpenseClients(manager, saved.id, dto.clientIds ?? []);
+      return { ...saved, projectIds, clientIds };
     });
 
     void this.notifyExpenseWatchers(response, 'creado', actorEmail);
@@ -138,7 +162,12 @@ export class ExpensesService {
         }
       }
 
-      return saved.map((row): ExpenseResponse => ({ ...row, projectIds }));
+      const clientIds = [...new Set(dto.clientIds ?? [])];
+      for (const row of saved) {
+        await this.replaceExpenseClients(manager, row.id, clientIds);
+      }
+
+      return saved.map((row): ExpenseResponse => ({ ...row, projectIds, clientIds }));
     });
 
     void this.notifyInstallmentsCreated(dto, responses, actorEmail);
@@ -183,7 +212,15 @@ export class ExpensesService {
         projectIds = links.map((link) => link.projectId);
       }
 
-      return { ...saved, projectIds };
+      let clientIds: string[];
+      if (dto.clientIds !== undefined) {
+        clientIds = await this.replaceExpenseClients(manager, id, dto.clientIds);
+      } else {
+        const links = await manager.getRepository(ExpenseClientEntity).find({ where: { expenseId: id } });
+        clientIds = links.map((link) => link.clientId);
+      }
+
+      return { ...saved, projectIds, clientIds };
     });
 
     void this.notifyExpenseWatchers(response, 'actualizado', actorEmail);
@@ -205,14 +242,51 @@ export class ExpensesService {
     return expense;
   }
 
-  private attachProjectIds(expenses: ExpenseEntity[], links: ExpenseProjectEntity[]): ExpenseResponse[] {
-    const projectIdsByExpense = new Map<string, string[]>();
-    for (const link of links) {
-      const list = projectIdsByExpense.get(link.expenseId) ?? [];
-      list.push(link.projectId);
-      projectIdsByExpense.set(link.expenseId, list);
+  private attachLinks(
+    expenses: ExpenseEntity[],
+    links: ExpenseProjectEntity[],
+    clientLinks: ExpenseClientEntity[],
+  ): ExpenseResponse[] {
+    const agrupar = <T extends { expenseId: string }>(rows: T[], valor: (row: T) => string) => {
+      const map = new Map<string, string[]>();
+      for (const row of rows) {
+        const list = map.get(row.expenseId) ?? [];
+        list.push(valor(row));
+        map.set(row.expenseId, list);
+      }
+      return map;
+    };
+    const projectIdsByExpense = agrupar(links, (link) => link.projectId);
+    const clientIdsByExpense = agrupar(clientLinks, (link) => link.clientId);
+    return expenses.map((expense) => ({
+      ...expense,
+      projectIds: projectIdsByExpense.get(expense.id) ?? [],
+      clientIds: clientIdsByExpense.get(expense.id) ?? [],
+    }));
+  }
+
+  // Igual que los proyectos: el form manda la lista completa de clientes que lo pagan.
+  private async replaceExpenseClients(manager: EntityManager, expenseId: string, clientIds: string[]): Promise<string[]> {
+    const repo = manager.getRepository(ExpenseClientEntity);
+    await repo.delete({ expenseId });
+    const uniqueIds = [...new Set(clientIds)];
+    if (uniqueIds.length === 0) return [];
+
+    try {
+      await repo.save(uniqueIds.map((clientId) => repo.create({ expenseId, clientId })));
+      return uniqueIds;
+    } catch (error) {
+      if (this.isForeignKeyViolation(error)) {
+        throw new BadRequestException('Uno de los clientes que pagan el gasto no existe.');
+      }
+      throw error;
     }
-    return expenses.map((expense) => ({ ...expense, projectIds: projectIdsByExpense.get(expense.id) ?? [] }));
+  }
+
+  private async resolveClientNames(clientIds: string[]): Promise<string[]> {
+    if (clientIds.length === 0) return [];
+    const clients = await this.clientRepository.find({ where: { id: In(clientIds) } });
+    return clients.map((client) => client.name);
   }
 
   // Reemplaza de una todos los proyectos asociados a un gasto (mismo patrón que
@@ -267,7 +341,10 @@ export class ExpensesService {
         return;
       }
 
-      const projectNames = await this.resolveProjectNames(expense.projectIds);
+      const [projectNames, clientNames] = await Promise.all([
+        this.resolveProjectNames(expense.projectIds),
+        this.resolveClientNames(expense.clientIds),
+      ]);
 
       const subject = `Gasto ${action}: ${expense.description}`;
       const rows: [string, string][] = [
@@ -275,6 +352,7 @@ export class ExpensesService {
         ['Monto', `${Number(expense.amount).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${expense.currency}`],
         ['Periodicidad', formatPeriodicity(expense.periodicity)],
         ['Proyectos', projectNames.length > 0 ? projectNames.join(', ') : 'Sin proyecto asociado'],
+        ['Lo pagan', clientNames.length > 0 ? clientNames.join(', ') : 'La empresa'],
         ['Medio de pago', expense.paymentMethod ?? '-'],
         ['Forma de pago alternativa', expense.alternativePaymentMethod ?? '-'],
         ['Acceso al pago', expense.paymentAccess ?? '-'],

@@ -6,6 +6,8 @@ export interface CreateExpenseDto {
   currency?: BillingCurrency;
   periodicity?: ExpensePeriodicity;
   projectIds?: string[];
+  /** Clientes que pagan el gasto: se les recobra en partes iguales. Vacío: lo paga la empresa. */
+  clientIds?: string[];
   paymentMethod?: string | null;
   alternativePaymentMethod?: string | null;
   paymentAccess?: string | null;
@@ -27,6 +29,7 @@ export interface CreateExpenseInstallmentsDto {
   firstInstallmentDate: string;
   currency?: BillingCurrency;
   projectIds?: string[];
+  clientIds?: string[];
   paymentMethod?: string | null;
   alternativePaymentMethod?: string | null;
   paymentAccess?: string | null;

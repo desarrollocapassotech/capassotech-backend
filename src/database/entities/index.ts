@@ -16,6 +16,7 @@ import {
 } from './cuenta-corriente.entity';
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseProjectEntity } from './expense-project.entity';
+import { ExpenseClientEntity } from './expense-client.entity';
 import { HealthCheckEntity } from './health-check.entity';
 import { MonthlyExchangeRateEntity } from './monthly-exchange-rate.entity';
 import { ProjectBillingTermEntity } from './project-billing-term.entity';
@@ -41,6 +42,7 @@ export * from './cuenta-corriente.entity';
 export * from './enums';
 export * from './expense.entity';
 export * from './expense-project.entity';
+export * from './expense-client.entity';
 export * from './health-check.entity';
 export * from './monthly-exchange-rate.entity';
 export * from './project-billing-term.entity';
@@ -75,6 +77,7 @@ export const entities = [
   TimeEntryEntity,
   ExpenseEntity,
   ExpenseProjectEntity,
+  ExpenseClientEntity,
   HealthCheckEntity,
   MonthlyExchangeRateEntity,
   TicketEntity,
