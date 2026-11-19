@@ -50,5 +50,6 @@ import { ResendService } from '../common/resend.service';
   ],
   controllers: [CuentaCorrienteController],
   providers: [CuentaCorrienteService, VencimientosService, ResendService],
+  exports: [CuentaCorrienteService],
 })
 export class CuentaCorrienteModule {}

@@ -22,7 +22,7 @@ export function buildEmailRowsTable(rows: [string, string][]): string {
 
 // Shell común (header con logo + footer) para todos los emails automáticos de
 // TimeTracker. `eyebrow` es el label chico en mayúsculas a la derecha del logo
-// (ej. "Gastos", "Horas"), `title`/`intro` son el h1 y el párrafo de debajo, y
+// (ej. "Gastos", "Horas"), `title`/`intro` son el h1 y el párrafo de debajo (vacío: sin párrafo), y
 // `bodyHtml` es el contenido específico de cada notificación (normalmente una
 // tabla armada con buildEmailRowsTable).
 export function buildEmailShell(options: { eyebrow: string; title: string; intro: string; bodyHtml: string }): string {
@@ -45,8 +45,8 @@ export function buildEmailShell(options: { eyebrow: string; title: string; intro
     </tr>
     <tr>
       <td style="padding:32px;">
-        <h1 style="margin:0 0 8px; font-size:20px; color:#111827;">${escapeHtml(options.title)}</h1>
-        <p style="margin:0 0 24px; font-size:14px; color:#6b7280;">${escapeHtml(options.intro)}</p>
+        <h1 style="margin:0 0 ${options.intro ? 8 : 16}px; font-size:20px; color:#111827;">${escapeHtml(options.title)}</h1>
+        ${options.intro ? `<p style="margin:0 0 24px; font-size:14px; color:#6b7280;">${escapeHtml(options.intro)}</p>` : ''}
         ${options.bodyHtml}
       </td>
     </tr>
