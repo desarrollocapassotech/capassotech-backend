@@ -28,6 +28,9 @@ import {
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
+  ExpenseClientEntity,
+  ExpenseEntity,
+  ExpenseProjectEntity,
   ProjectEntity,
   TimeEntryEntity,
   type CcComprobantePrevio,
@@ -73,6 +76,7 @@ import {
   tipoDeArchivo,
 } from './leer-comprobante';
 import { cuentaParaPortal } from './portal';
+import { gastoDelMes, partesDelGasto } from '../expenses/gastos';
 import { reciboConfirmado } from './unificar-recibos';
 
 // Cuenta corriente de clientes y colaboradores. A diferencia de Vialto (donde el cargo nace de
@@ -239,6 +243,12 @@ export class CuentaCorrienteService {
     private readonly recibosEnviados: Repository<CollaboratorReceiptAcknowledgementEntity>,
     @InjectRepository(TimeEntryEntity)
     private readonly horas: Repository<TimeEntryEntity>,
+    @InjectRepository(ExpenseEntity)
+    private readonly gastos: Repository<ExpenseEntity>,
+    @InjectRepository(ExpenseClientEntity)
+    private readonly gastosClientes: Repository<ExpenseClientEntity>,
+    @InjectRepository(ExpenseProjectEntity)
+    private readonly gastosProyectos: Repository<ExpenseProjectEntity>,
     private readonly facturacion: FacturacionService,
     private readonly facturador: FacturadorClient,
     private readonly tipoDeCambio: ExchangeRateService,
@@ -668,11 +678,12 @@ export class CuentaCorrienteService {
       try {
         let calculados: CargoCalculado[];
         if (side === 'cliente') {
-          const [r, entidad] = await Promise.all([
+          const [r, entidad, reintegros] = await Promise.all([
             this.facturacion.calcular(mes),
             this.clientes.findOneByOrFail({ id }),
+            this.reintegrosDelMes(mes),
           ]);
-          calculados = this.calcularCargosCliente(entidad, r);
+          calculados = this.calcularCargosCliente(entidad, r, reintegros.get(id) ?? []);
         } else {
           const { desde, hasta } = rangoMes(mes);
           const [colaborador, entradas, overrides] = await Promise.all([
@@ -767,9 +778,60 @@ export class CuentaCorrienteService {
   }
 
   private async calculadorDeClientes(mes: string, clientes: ClientEntity[]) {
-    const r = await this.facturacion.calcular(mes);
+    const [r, reintegros] = await Promise.all([
+      this.facturacion.calcular(mes),
+      this.reintegrosDelMes(mes),
+    ]);
     const porId = new Map(clientes.map((c) => [c.id, c]));
-    return (id: string) => this.calcularCargosCliente(porId.get(id)!, r);
+    return (id: string) =>
+      this.calcularCargosCliente(porId.get(id)!, r, reintegros.get(id) ?? []);
+  }
+
+  /**
+   * Gastos que la empresa paga y les recobra a sus clientes (`expense_clients`): por cliente, una
+   * línea por gasto del mes con su parte (partes iguales entre los que lo pagan), en la moneda
+   * del gasto. Van en el cargo del mes, así siguen las mismas reglas: sin imputaciones el cargo
+   * acompaña al gasto, y con imputaciones queda fijo y la diferencia va en un ajuste.
+   */
+  private async reintegrosDelMes(
+    mes: string,
+  ): Promise<Map<string, { moneda: CcMoneda; linea: CcLineaDetalle }[]>> {
+    const porCliente = new Map<string, { moneda: CcMoneda; linea: CcLineaDetalle }[]>();
+    const vinculos = await this.gastosClientes.find();
+    if (!vinculos.length) return porCliente;
+    const gastoIds = [...new Set(vinculos.map((v) => v.expenseId))];
+    const [gastos, proyectos] = await Promise.all([
+      this.gastos.findBy({ id: In(gastoIds) }),
+      this.gastosProyectos.findBy({ expenseId: In(gastoIds) }),
+    ]);
+    for (const gasto of gastos) {
+      if (!gastoDelMes(gasto, mes)) continue;
+      const clientIds = vinculos.filter((v) => v.expenseId === gasto.id).map((v) => v.clientId);
+      const partes = partesDelGasto(Number(gasto.amount), clientIds);
+      const proyectoId = proyectos
+        .filter((p) => p.expenseId === gasto.id)
+        .map((p) => p.projectId)
+        .sort()[0];
+      for (const [clientId, importe] of partes) {
+        if (importe <= EPS) continue;
+        const lista = porCliente.get(clientId) ?? [];
+        lista.push({
+          moneda: gasto.currency === BillingCurrency.ARS ? 'ARS' : 'USD',
+          linea: {
+            descripcion:
+              partes.size > 1
+                ? `Reintegro de gasto: ${gasto.description} (1/${partes.size})`
+                : `Reintegro de gasto: ${gasto.description}`,
+            cantidad: '1',
+            importe,
+            // Sin referencia: esas son las del Facturador, para buscar facturas hechas por fuera.
+            ...(proyectoId ? { proyectoId } : {}),
+          },
+        });
+        porCliente.set(clientId, lista);
+      }
+    }
+    return porCliente;
   }
 
   private async calculadorDeColaboradores(
@@ -793,6 +855,7 @@ export class CuentaCorrienteService {
   private calcularCargosCliente(
     entidad: ClientEntity,
     r: Awaited<ReturnType<FacturacionService['calcular']>>,
+    reintegros: { moneda: CcMoneda; linea: CcLineaDetalle }[] = [],
   ): CargoCalculado[] {
     const clienteId = entidad.id;
     const porMoneda = new Map<CcMoneda, CcLineaDetalle[]>();
@@ -821,6 +884,8 @@ export class CuentaCorrienteService {
         ),
       });
     }
+    // Gastos que se le recobran (ver reintegrosDelMes).
+    for (const { moneda, linea } of reintegros) grupo(moneda).push(linea);
     return [...porMoneda].map(([moneda, lineas]) => ({
       moneda,
       importe: redondear(lineas.reduce((t, l) => t + l.importe, 0)),
@@ -1258,9 +1323,10 @@ export class CuentaCorrienteService {
    * con algo pendiente (descontados créditos e imputaciones vigentes). Antes genera los cargos del
    * mes y las cuotas, que si no solo aparecen al abrir las cuentas.
    */
-  async cargosQueVencen(fecha: string) {
+  async cargosQueVencen(fecha: string, generar = true) {
+    // `generar = false`: ya se generaron (por ejemplo, al revisar varias fechas seguidas).
     const { mesInicio } = await this.obtenerConfig();
-    for (const side of ['cliente', 'colaborador'] as const) {
+    for (const side of generar ? (['cliente', 'colaborador'] as const) : []) {
       if (mesInicio) await this.generarCargosDelLado(side, mesInicio);
       await this.generarCuotas({ side });
     }

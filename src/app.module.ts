@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
+import { BalanceModule } from './balance/balance.module';
 import { BirthdayRemindersModule } from './birthday-reminders/birthday-reminders.module';
 import { ClientsModule } from './clients/clients.module';
 import { CollaboratorsModule } from './collaborators/collaborators.module';
@@ -29,6 +30,7 @@ import { TimeEntriesModule } from './time-entries/time-entries.module';
     ScheduleModule.forRoot(),
     DatabaseModule,
     AuthModule,
+    BalanceModule,
     BirthdayRemindersModule,
     CollaboratorsModule,
     CollaboratorPerformanceModule,

@@ -13,6 +13,9 @@ import {
   CollaboratorProjectRateEntity,
   CollaboratorReceiptAcknowledgementEntity,
   TimeEntryEntity,
+  ExpenseEntity,
+  ExpenseClientEntity,
+  ExpenseProjectEntity,
 } from '../database/entities';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { FacturacionModule } from '../facturacion/facturacion.module';
@@ -35,6 +38,9 @@ import { ResendService } from '../common/resend.service';
       CollaboratorProjectRateEntity,
       CollaboratorReceiptAcknowledgementEntity,
       TimeEntryEntity,
+      ExpenseEntity,
+      ExpenseClientEntity,
+      ExpenseProjectEntity,
     ]),
     AuthModule,
     CollaboratorsModule,
@@ -44,5 +50,6 @@ import { ResendService } from '../common/resend.service';
   ],
   controllers: [CuentaCorrienteController],
   providers: [CuentaCorrienteService, VencimientosService, ResendService],
+  exports: [CuentaCorrienteService],
 })
 export class CuentaCorrienteModule {}

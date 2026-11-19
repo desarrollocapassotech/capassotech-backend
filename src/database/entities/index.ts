@@ -1,4 +1,5 @@
 import { AppUserEntity } from './app-user.entity';
+import { BalanceSummarySendEntity } from './balance-summary-send.entity';
 import { BirthdayReminderEntity } from './birthday-reminder.entity';
 import { ClientFunctionalAnalystEntity } from './client-functional-analyst.entity';
 import { ClientHoursAlertEntity } from './client-hours-alert.entity';
@@ -16,6 +17,7 @@ import {
 } from './cuenta-corriente.entity';
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseProjectEntity } from './expense-project.entity';
+import { ExpenseClientEntity } from './expense-client.entity';
 import { HealthCheckEntity } from './health-check.entity';
 import { MonthlyExchangeRateEntity } from './monthly-exchange-rate.entity';
 import { ProjectBillingTermEntity } from './project-billing-term.entity';
@@ -29,6 +31,7 @@ import { TicketMessageEntity } from './ticket-message.entity';
 import { TicketStateEntity } from './ticket-state.entity';
 
 export * from './app-user.entity';
+export * from './balance-summary-send.entity';
 export * from './birthday-reminder.entity';
 export * from './client-functional-analyst.entity';
 export * from './client-hours-alert.entity';
@@ -41,6 +44,7 @@ export * from './cuenta-corriente.entity';
 export * from './enums';
 export * from './expense.entity';
 export * from './expense-project.entity';
+export * from './expense-client.entity';
 export * from './health-check.entity';
 export * from './monthly-exchange-rate.entity';
 export * from './project-billing-term.entity';
@@ -55,6 +59,7 @@ export * from './ticket-state.entity';
 
 export const entities = [
   AppUserEntity,
+  BalanceSummarySendEntity,
   BirthdayReminderEntity,
   CollaboratorEntity,
   CollaboratorProjectRateEntity,
@@ -75,6 +80,7 @@ export const entities = [
   TimeEntryEntity,
   ExpenseEntity,
   ExpenseProjectEntity,
+  ExpenseClientEntity,
   HealthCheckEntity,
   MonthlyExchangeRateEntity,
   TicketEntity,
