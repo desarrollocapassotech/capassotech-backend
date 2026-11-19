@@ -1323,9 +1323,10 @@ export class CuentaCorrienteService {
    * con algo pendiente (descontados créditos e imputaciones vigentes). Antes genera los cargos del
    * mes y las cuotas, que si no solo aparecen al abrir las cuentas.
    */
-  async cargosQueVencen(fecha: string) {
+  async cargosQueVencen(fecha: string, generar = true) {
+    // `generar = false`: ya se generaron (por ejemplo, al revisar varias fechas seguidas).
     const { mesInicio } = await this.obtenerConfig();
-    for (const side of ['cliente', 'colaborador'] as const) {
+    for (const side of generar ? (['cliente', 'colaborador'] as const) : []) {
       if (mesInicio) await this.generarCargosDelLado(side, mesInicio);
       await this.generarCuotas({ side });
     }
